@@ -1,840 +1,747 @@
+
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+app_streamlit_final_v3_persist2.py
+
+Novidades:
+- "Sugestões Salvas": ao selecionar uma sugestão, ela é CARREGADA automaticamente,
+  a relação de itens aparece abaixo e você pode incluir novos itens e salvar MESCLANDO.
+- "Preço de venda" agora é garantido: preco_de_venda = preco_base * fator
+  com parsing robusto (vírgula decimal) e fator zerado/NaN substituído pelo fator global.
+"""
+
+import os
+import io
+from datetime import datetime
+
+import streamlit as st
+import pandas as pd
+from PIL import Image
+
+# --- PDF (ReportLab) ---
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
+
+# --- Excel (openpyxl) ---
 import openpyxl
 from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
 from openpyxl.drawing.image import Image as XLImage
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog, Toplevel
-import pandas as pd
-from PIL import Image, ImageTk
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from reportlab.lib.utils import ImageReader
-from reportlab.lib import colors
-from datetime import datetime
-import os
 
+# --- Constantes e diretórios ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMAGEM_DIR = os.path.join(BASE_DIR, "imagens")
-SUGESTOES_DIR = "sugestoes"
-CARTA_DIR = "CARTA"
+SUGESTOES_DIR = os.path.join(BASE_DIR, "sugestoes")
+CARTA_DIR = os.path.join(BASE_DIR, "CARTA")
 LOGO_PADRAO = os.path.join(CARTA_DIR, "logo_inga.png")
 
-# Campos obrigatórios, incluindo 'tipo'
-CAMPOS_NOVOS = [
-    "cod", "descricao", "visual", "olfato", "gustativo", "premiacoes", "amadurecimento",
-    "regiao", "pais", "vinicola", "corpo", "tipo",
-    "uva1", "uva2", "uva3",
-    "preco38", "preco39", "preco1", "preco2", "preco15", "preco55", "preco63"
+TIPO_ORDEM_FIXA = [
+    "Espumantes", "Brancos", "Rosés", "Tintos",
+    "Frisantes", "Fortificados", "Vinhos de sobremesa", "Licorosos"
 ]
 
-class WineMenuApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Sugestão de Carta de Vinhos")
-        self.root.geometry("1200x600")
+# ===== Helpers =====
+def garantir_pastas():
+    for p in (IMAGEM_DIR, SUGESTOES_DIR, CARTA_DIR):
+        os.makedirs(p, exist_ok=True)
 
-        if not os.path.isdir(SUGESTOES_DIR):
-            os.makedirs(SUGESTOES_DIR)
-        if not os.path.isdir(CARTA_DIR):
-            os.makedirs(CARTA_DIR)
+def parse_money_series(s, default=0.0):
+    """Converte série textual com possível separador de milhar '.' e decimal ',' em float."""
+    s = s.astype(str).str.replace("\u00A0", "", regex=False).str.strip()
+    s = s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+    return pd.to_numeric(s, errors="coerce").fillna(default)
 
-        # Lê vinhos1.xls e garante todos os campos obrigatórios
-        self.data = pd.read_excel('vinhos1.xls')
-        self.data.columns = [c.strip().lower() for c in self.data.columns]
-        for col in CAMPOS_NOVOS:
-            if col not in self.data.columns:
-                self.data[col] = ""
-        # Garante tipos corretos para os campos de preço
-        for col in ["preco38", "preco39", "preco1", "preco2", "preco15", "preco55", "preco63"]:
-            self.data[col] = pd.to_numeric(self.data[col], errors='coerce').fillna(0.0)
+def to_float_series(s, default=0.0):
+    if pd.api.types.is_numeric_dtype(s):
+        return pd.to_numeric(s, errors="coerce").fillna(default)
+    # tenta parse "1.234,56" também
+    try:
+        return parse_money_series(s, default=default)
+    except Exception:
+        return pd.to_numeric(s, errors="coerce").fillna(default)
 
-        # Flag para escolher tabela de preço
-        self.preco_flag_var = tk.StringVar(value="preco1")
-        self.atualiza_coluna_preco_base()
+def ler_excel_vinhos(caminho="vinhos1.xls"):
+    _, ext = os.path.splitext(caminho.lower())
+    engine = None
+    if ext == ".xls":
+        engine = "xlrd"
+    elif ext in (".xlsx", ".xlsm"):
+        engine = "openpyxl"
+    try:
+        df = pd.read_excel(caminho, engine=engine)
+    except ImportError:
+        st.error("Para ler .xls instale xlrd>=2.0.1, ou converta para .xlsx (openpyxl).")
+        raise
+    except Exception:
+        df = pd.read_excel(caminho)
+    df.columns = [c.strip().lower() for c in df.columns]
+    if "idx" not in df.columns or df["idx"].isna().all():
+        df = df.reset_index(drop=False).rename(columns={"index": "idx"})
+    # normaliza tipos
+    df["idx"] = pd.to_numeric(df["idx"], errors="coerce").fillna(-1).astype(int)
 
-        if "fator" not in self.data.columns:
-            self.data["fator"] = 2.0
-        self.data["fator"] = pd.to_numeric(self.data["fator"], errors='coerce').fillna(2.0)
-        self.data["preco_de_venda"] = self.data["preco_base"] * self.data["fator"]
-        if "cadastrado_manual" not in self.data.columns:
-            self.data["cadastrado_manual"] = False
-
-        self.filtered_data = self.data.copy()
-        self.selected_indices = set()
-        self.logo_path = None
-        self.manual_prices = {}
-        self.manual_fat = {}
-
-        self.sugestoes_dict = {}
-        self.sugestao_nome_var = tk.StringVar()
-
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill="both", expand=True)
-        self.frame_sugestao = ttk.Frame(self.notebook)
-        self.notebook.add(self.frame_sugestao, text="Sugestão")
-        self.frame_salvas = ttk.Frame(self.notebook)
-        self.notebook.add(self.frame_salvas, text="Sugestões Salvas")
-        self.frame_cadastro = ttk.Frame(self.notebook)
-        self.notebook.add(self.frame_cadastro, text="Cadastro de Vinhos")
-
-        self.build_sugestao_tab()
-        self.build_salvas_tab()
-        self.build_cadastro_tab()
-
-    def atualiza_coluna_preco_base(self):
-        flag = getattr(self, "preco_flag_var", None)
-        flag = flag.get() if flag else "preco1"
-        if flag not in self.data.columns:
-            self.data["preco_base"] = self.data["preco1"] if "preco1" in self.data else 0.0
+    # preços e fator: aceitar vírgula
+    for col in ["preco38","preco39","preco1","preco2","preco15","preco55","preco63","preco_base","fator","preco_de_venda"]:
+        if col not in df.columns:
+            df[col] = 0.0
         else:
-            self.data["preco_base"] = self.data[flag].fillna(0.0)
-        self.data["preco_de_venda"] = self.data["preco_base"] * self.data.get("fator", 2.0)
-        self.filtered_data = self.data.copy()
+            df[col] = to_float_series(df[col], default=0.0)
 
-    def muda_tabela_preco(self, event=None):
-        self.atualiza_coluna_preco_base()
-        self.refresh_table()
-        self.update_label_contagem()
+    # textos
+    for col in ["cod","descricao","pais","regiao","tipo","uva1","uva2","uva3","amadurecimento","vinicola","corpo","visual","olfato","gustativo","premiacoes"]:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].astype(str)
+    return df
 
-    def build_sugestao_tab(self):
-        f = self.frame_sugestao
-        titulo_principal = tk.Label(f, text="Sugestão de Carta de Vinhos", font=("Arial", 14, "bold"))
-        titulo_principal.pack(pady=5)
-
-        super_top_frame = ttk.Frame(f)
-        super_top_frame.pack(fill='x', padx=5, pady=2)
-
-        ttk.Label(super_top_frame, text="Nome do Cliente:", font=("Arial", 10)).pack(side='left', padx=(0,2))
-        self.title_var = tk.StringVar(value="")
-        ttk.Entry(super_top_frame, textvariable=self.title_var, width=30, font=("Arial", 10)).pack(side='left', padx=2)
-        ttk.Button(super_top_frame, text="Carregar logo", command=self.load_logo).pack(side='left', padx=5)
-        self.logo_label = ttk.Label(super_top_frame)
-        self.logo_label.pack(side='left', padx=5)
-
-        self.inserir_foto_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(super_top_frame, text="Inserir foto no PDF/Excel", variable=self.inserir_foto_var).pack(side='left', padx=10)
-
-        ttk.Label(super_top_frame, text="Tabela de preço:", font=("Arial", 10)).pack(side='left', padx=(10,2))
-        opcoes_precos = ["preco1", "preco2", "preco15", "preco38", "preco39", "preco55", "preco63"]
-        preco_menu = ttk.Combobox(super_top_frame, textvariable=self.preco_flag_var, values=opcoes_precos, width=8)
-        preco_menu.pack(side='left', padx=2)
-        preco_menu.bind("<<ComboboxSelected>>", self.muda_tabela_preco)
-
-        ttk.Label(super_top_frame, text="  ").pack(side='left')
-        ttk.Label(super_top_frame, text="Buscar:", font=("Arial", 10)).pack(side='left', padx=(0,2))
-        self.global_filter_var = tk.StringVar()
-        global_entry = ttk.Entry(super_top_frame, textvariable=self.global_filter_var, width=30, font=("Arial", 10))
-        global_entry.pack(side='left', padx=2)
-        global_entry.bind('<KeyRelease>', self.apply_global_filter)
-        ttk.Label(super_top_frame, text="Fator:", font=("Arial", 10)).pack(side="left", padx=(10,2))
-        self.fator_var = tk.StringVar(value="2.0")
-        fator_entry = ttk.Entry(super_top_frame, textvariable=self.fator_var, width=5, font=("Arial",10))
-        fator_entry.pack(side="left")
-        fator_entry.bind('<KeyRelease>', lambda e: self.atualiza_fator_geral())
-        ttk.Button(super_top_frame, text="Resetar/Mostrar Todos", command=self.resetar_tudo).pack(side='right', padx=5)
-
-        filter_frame = ttk.LabelFrame(f, text="Filtros")
-        filter_frame.pack(fill='x', padx=5, pady=2)
-        self.pais_var = tk.StringVar()
-        self.tipo_var = tk.StringVar()
-        self.desc_var = tk.StringVar()
-        self.regiao_var = tk.StringVar()
-        self.cod_var = tk.StringVar()
-        self.preco_min_var = tk.StringVar()
-        self.preco_max_var = tk.StringVar()
-        paises = [""] + sorted(self.data['pais'].dropna().unique().tolist())
-        tipos = [""] + sorted(self.data['tipo'].dropna().unique().tolist())
-        descrs = [""] + sorted(self.data['descricao'].dropna().unique().tolist())
-        regioes = [""] + sorted(self.data['regiao'].dropna().unique().tolist())
-        codigos = [""] + sorted(map(str, self.data['cod'].dropna().unique().tolist()))
-
-        ttk.Label(filter_frame, text="País:", font=("Arial", 8)).grid(row=0, column=0, padx=2)
-        pais_cb = ttk.Combobox(filter_frame, textvariable=self.pais_var, values=paises, width=12, font=("Arial", 8))
-        pais_cb.grid(row=0, column=1, padx=2)
-        pais_cb.bind("<<ComboboxSelected>>", lambda e: self.apply_filters())
-        ttk.Label(filter_frame, text="Tipo:", font=("Arial", 8)).grid(row=0, column=2, padx=2)
-        tipo_cb = ttk.Combobox(filter_frame, textvariable=self.tipo_var, values=tipos, width=12, font=("Arial", 8))
-        tipo_cb.grid(row=0, column=3, padx=2)
-        tipo_cb.bind("<<ComboboxSelected>>", lambda e: self.apply_filters())
-        ttk.Label(filter_frame, text="Descrição:", font=("Arial", 8)).grid(row=0, column=4, padx=2)
-        desc_cb = ttk.Combobox(filter_frame, textvariable=self.desc_var, values=descrs, width=15, font=("Arial", 8))
-        desc_cb.grid(row=0, column=5, padx=2)
-        desc_cb.bind("<<ComboboxSelected>>", lambda e: self.apply_filters())
-        ttk.Label(filter_frame, text="Região:", font=("Arial", 8)).grid(row=0, column=6, padx=2)
-        regiao_cb = ttk.Combobox(filter_frame, textvariable=self.regiao_var, values=regioes, width=12, font=("Arial", 8))
-        regiao_cb.grid(row=0, column=7, padx=2)
-        regiao_cb.bind("<<ComboboxSelected>>", lambda e: self.apply_filters())
-        ttk.Label(filter_frame, text="Código:", font=("Arial", 8)).grid(row=0, column=8, padx=2)
-        cod_cb = ttk.Combobox(filter_frame, textvariable=self.cod_var, values=codigos, width=8, font=("Arial", 8))
-        cod_cb.grid(row=0, column=9, padx=2)
-        cod_cb.bind("<<ComboboxSelected>>", lambda e: self.apply_filters())
-        ttk.Label(filter_frame, text="Preço Mín:", font=("Arial", 8)).grid(row=0, column=10, padx=2)
-        preco_min_entry = ttk.Entry(filter_frame, textvariable=self.preco_min_var, width=6, font=("Arial", 8))
-        preco_min_entry.grid(row=0, column=11, padx=2)
-        preco_min_entry.bind('<KeyRelease>', lambda e: self.apply_filters())
-        ttk.Label(filter_frame, text="Preço Máx:", font=("Arial", 8)).grid(row=0, column=12, padx=2)
-        preco_max_entry = ttk.Entry(filter_frame, textvariable=self.preco_max_var, width=6, font=("Arial", 8))
-        preco_max_entry.grid(row=0, column=13, padx=2)
-        preco_max_entry.bind('<KeyRelease>', lambda e: self.apply_filters())
-        self.check_var_select_all = tk.BooleanVar()
-        self.check_var_select_none = tk.BooleanVar()
-        ttk.Checkbutton(filter_frame, text="Selecionar todos", variable=self.check_var_select_all, command=self.select_all_filtered).grid(row=0, column=14, padx=2)
-        ttk.Checkbutton(filter_frame, text="Desmarcar todos", variable=self.check_var_select_none, command=self.deselect_all_filtered).grid(row=0, column=15, padx=2)
-        clear_btn = ttk.Button(filter_frame, text="Limpar filtros", command=self.clear_filters)
-        clear_btn.grid(row=0, column=16, padx=5)
-
-        style = ttk.Style()
-        style.configure("Treeview.Heading", font=('Arial', 8, 'bold'))
-        style.configure("Treeview", font=('Arial', 8))
-        style.map("Treeview", background=[("selected", "#e0ecef")])
-        style.configure("Treeview.even", background="#e6e6e6")
-        style.configure("Treeview.odd", background="#ffffff")
-        self.tree = ttk.Treeview(
-            f,
-            columns=("selecionado", "foto", "cod", "descricao", "pais", "regiao", "preco_base", "preco_de_venda", "fator"),
-            show="headings",
-            selectmode="none",
-            height=12
-        )
-        for col, w in zip(
-            ("selecionado", "foto", "cod", "descricao", "pais", "regiao", "preco_base", "preco_de_venda", "fator"),
-            [30, 30, 50, 200, 70, 70, 80, 90, 60]
-        ):
-            self.tree.heading(col, text=col.upper())
-            self.tree.column(col, width=w)
-        self.tree.pack(fill="both", expand=True, padx=5, pady=2)
-        self.tree.bind('<ButtonRelease-1>', self.on_tree_click)
-        self.tree.bind('<Double-1>', self.edit_price_or_fator)
-        self.tree.tag_configure('manual', font=('Arial', 8))
-        self.tree.tag_configure('even', background="#e6e6e6")
-        self.tree.tag_configure('odd', background="#ffffff")
-        self.label_contagem = ttk.Label(f, text="", font=("Arial", 8), anchor='e')
-        self.label_contagem.pack(fill="x", padx=5, pady=(0,5))
-
-        btn_frame = ttk.Frame(f)
-        btn_frame.pack(pady=5)
-        ttk.Button(btn_frame, text="Visualizar Sugestão", command=self.visualizar_pdf).pack(side='left', padx=3)
-        ttk.Button(btn_frame, text="Visualizar Itens Marcados", command=self.visualizar_marcados).pack(side='left', padx=3)
-        ttk.Button(btn_frame, text="Gerar PDF", command=self.generate_pdf_layout).pack(side='left', padx=3)
-        ttk.Button(btn_frame, text="Exportar para Excel", command=self.export_to_excel_layout).pack(side='left', padx=3)
-        ttk.Button(btn_frame, text="Salvar Sugestão", command=self.salvar_sugestao_dialog).pack(side='left', padx=3)
-        self.update_label_contagem()
-        self.refresh_table()
-
-    def update_label_contagem(self):
-        df = self.filtered_data
-        contagem = {'Brancos': 0, 'Tintos': 0, 'Rosés': 0, 'Espumantes': 0, 'outros': 0}
-        tipo_map = {'branco': 'Brancos', 'tinto': 'Tintos', 'rose': 'Rosés', 'rosé': 'Rosés', 'espumante': 'Espumantes'}
-        for tipo in df['tipo'].dropna().unique():
-            tipo_label = next((lbl for k, lbl in tipo_map.items() if k in str(tipo).lower()), 'outros')
-            contagem[tipo_label] = len(df[df['tipo'] == tipo])
-        total = len(df)
-        selecionados = len(self.selected_indices)
-        fator_geral = self.fator_var.get()
-        texto = f"Brancos: {contagem.get('Brancos', 0)} | Tintos: {contagem.get('Tintos', 0)} | Rosés: {contagem.get('Rosés', 0)} | Espumantes: {contagem.get('Espumantes', 0)} | Total: {total} | Selecionados: {selecionados} | Fator: {fator_geral}"
-        self.label_contagem.config(text=texto)
-
-    def atualiza_fator_geral(self):
-        try:
-            fat = float(self.fator_var.get())
-            self.data['fator'] = fat
-            self.data['preco_de_venda'] = self.data['preco_base'] * self.data['fator']
-            for idx in self.manual_fat:
-                self.data.at[idx, 'fator'] = self.manual_fat[idx]
-                self.data.at[idx, 'preco_de_venda'] = self.data.at[idx, 'preco_base'] * self.manual_fat[idx]
-            self.filtered_data = self.data.copy()
-            self.refresh_table()
-            self.update_label_contagem()
-        except Exception:
-            pass
-
-    def refresh_table(self):
-        for i in self.tree.get_children():
-            self.tree.delete(i)
-        ordem = 1
-        for idx_filt, row in self.filtered_data.iterrows():
-            idx = row.name
-            preco = row['preco_base'] if pd.notnull(row['preco_base']) else 0.0
-            fator = self.manual_fat.get(idx, row.get('fator', 2.0))
-            preco_venda = self.manual_prices.get(idx, preco * fator)
-            tag = 'manual' if idx in self.manual_fat else ''
-            tag += ' even' if ordem % 2 == 0 else ' odd'
-            imgfile = self.get_imagem_file(str(row['cod']))
-            
-            x_texto = 90
-            tem_foto = "●" if imgfile else ""
-            self.tree.insert('', 'end', iid=idx, values=(
-                "✔" if idx in self.selected_indices else "",
-                tem_foto,
-                row.get('cod', ''),
-                row.get('descricao', ''),
-                row.get('pais', ''),
-                row.get('regiao', ''),
-                f"R$ {preco:.2f}",
-                f"R$ {preco_venda:.2f}",
-                f"{fator:.2f}"
-            ), tags=(tag,))
-            ordem += 1
-        self.update_label_contagem()
-
-    def on_tree_click(self, event):
-        row_id = self.tree.identify_row(event.y)
-        if not row_id: return
-        idx = int(row_id)
-        if idx in self.selected_indices:
-            self.selected_indices.remove(idx)
-        else:
-            self.selected_indices.add(idx)
-        self.refresh_table()
-
-    def edit_price_or_fator(self, event):
-        col = self.tree.identify_column(event.x)
-        row_id = self.tree.identify_row(event.y)
-        if not row_id: return
-        idx = int(row_id)
-        row = self.data.loc[idx]
-        preco = row['preco_base']
-        if col == "#9":
-            fat_antigo = self.manual_fat.get(idx, row.get('fator', 2.0))
-            novo_fat = simpledialog.askfloat("Fator", f"Novo fator para {row['descricao']}:", initialvalue=fat_antigo)
-            if novo_fat is not None:
-                self.manual_fat[idx] = novo_fat
-                self.data.at[idx, 'fator'] = novo_fat
-                self.data.at[idx, 'preco_de_venda'] = self.data.at[idx, 'preco_base'] * novo_fat
-                self.filtered_data = self.data.copy()
-                self.refresh_table()
-        elif col == "#8":
-            preco_venda_antigo = self.manual_prices.get(idx, row.get('preco_de_venda', preco * row.get('fator', 2.0)))
-            novo_preco_venda = simpledialog.askfloat("Ajustar Preço de Venda", f"Novo preço de venda para {row['descricao']}:", initialvalue=preco_venda_antigo)
-            if novo_preco_venda is not None:
-                self.manual_prices[idx] = novo_preco_venda
-                self.data.at[idx, 'preco_de_venda'] = novo_preco_venda
-                self.filtered_data = self.data.copy()
-                self.refresh_table()
-
-    def apply_global_filter(self, event=None):
-        term = self.global_filter_var.get().strip().lower()
-        if not term:
-            self.filtered_data = self.data.copy()
-        else:
-            df = self.data.copy()
-            mask = df.apply(lambda row: term in " ".join(str(v).lower() for v in row.values), axis=1)
-            self.filtered_data = df[mask]
-        self.refresh_table()
-
-    def apply_filters(self, event=None):
-        df = self.data.copy()
-        term = self.global_filter_var.get().strip().lower()
-        if term:
-            mask = df.apply(lambda row: term in " ".join(str(v).lower() for v in row.values), axis=1)
-            df = df[mask]
-        if self.pais_var.get():
-            df = df[df['pais'] == self.pais_var.get()]
-        if self.tipo_var.get():
-            df = df[df['tipo'] == self.tipo_var.get()]
-        if self.desc_var.get():
-            df = df[df['descricao'] == self.desc_var.get()]
-        if self.regiao_var.get():
-            df = df[df['regiao'] == self.regiao_var.get()]
-        if self.cod_var.get():
-            df = df[df['cod'].astype(str) == self.cod_var.get()]
-        try:
-            if self.preco_min_var.get():
-                min_price = float(self.preco_min_var.get())
-                df = df[df['preco_base'] >= min_price]
-        except ValueError:
-            pass
-        try:
-            if self.preco_max_var.get():
-                max_price = float(self.preco_max_var.get())
-                df = df[df['preco_base'] <= max_price]
-        except ValueError:
-            pass
-        self.filtered_data = df
-        self.refresh_table()
-        if self.filtered_data.empty:
-            messagebox.showinfo("Filtros", "Nenhum vinho encontrado com os filtros aplicados.")
-
-    def select_all_filtered(self):
-        self.selected_indices |= set(self.filtered_data.index)
-        self.refresh_table()
-        self.check_var_select_all.set(False)
-
-    def deselect_all_filtered(self):
-        self.selected_indices -= set(self.filtered_data.index)
-        self.refresh_table()
-        self.check_var_select_none.set(False)
-
-    def clear_filters(self):
-        self.pais_var.set("")
-        self.tipo_var.set("")
-        self.desc_var.set("")
-        self.regiao_var.set("")
-        self.cod_var.set("")
-        self.preco_min_var.set("")
-        self.preco_max_var.set("")
-        self.global_filter_var.set("")
-        self.filtered_data = self.data.copy()
-        self.selected_indices.clear()
-        self.refresh_table()
-
-    def resetar_tudo(self):
-        self.filtered_data = self.data.copy()
-        self.selected_indices.clear()
-        self.refresh_table()
-
-    def load_logo(self):
-        filepath = filedialog.askopenfilename(title="Selecione a logo", filetypes=[("Imagens", "*.jpg *.jpeg *.png")])
-        if filepath:
-            self.logo_path = filepath
-            img = Image.open(filepath)
-            img.thumbnail((80, 40))
-            img_tk = ImageTk.PhotoImage(img)
-            self.logo_label.img_tk = img_tk
-            self.logo_label.configure(image=img_tk)
-
-    def visualizar_pdf(self):
-        preview = self.gerar_preview_texto()
-        win = Toplevel(self.root)
-        win.title("Pré-visualização da Sugestão")
-        text = tk.Text(win, wrap="word", font=("Arial", 10))
-        text.pack(fill="both", expand=True)
-        text.insert("1.0", preview)
-        text.config(state="disabled")
-
-    def visualizar_marcados(self):
-        if not self.selected_indices:
-            messagebox.showinfo("Info", "Nenhum item marcado.")
-            return
-        win = Toplevel(self.root)
-        win.title("Itens Marcados")
-        text = tk.Text(win, wrap="word", font=("Arial", 10))
-        text.pack(fill="both", expand=True)
-        for idx in self.selected_indices:
-            row = self.data.loc[idx]
-            text.insert("end", f"{row['cod']} - {row['descricao']} | {row['pais']} | {row['regiao']} | R$ {row['preco_base']:.2f}\n")
-        text.config(state="disabled")
-
-    def gerar_preview_texto(self):
-        if not self.selected_indices:
-            return "Nenhum item selecionado."
-        df = self.data.loc[list(self.selected_indices)].copy()
-        df['preco_de_venda'] = [self.manual_prices.get(idx, row.get('preco_de_venda', row['preco_base']*row.get('fator',2))) for idx, row in df.iterrows()]
-        df['fator'] = [self.manual_fat.get(idx, row.get('fator',2.0)) for idx, row in df.iterrows()]
-        df = df.sort_values(['tipo', 'pais', 'descricao'])
-        preview = []
-        preview.append("Sugestão Carta de Vinhos")
-        if self.title_var.get():
-            preview.append(f"Cliente: {self.title_var.get()}")
-        preview.append("=" * 70)
-        ordem_geral = 1
-        contagem = {'Brancos':0, 'Tintos':0, 'Rosés':0, 'Espumantes':0, 'outros':0}
-        tipo_map = {'branco':'Brancos', 'tinto':'Tintos', 'rose':'Rosés', 'rosé':'Rosés', 'espumante':'Espumantes'}
-        for tipo in df['tipo'].dropna().unique():
-            tipo_label = next((lbl for k,lbl in tipo_map.items() if k in str(tipo).lower()), 'outros')
-            preview.append(f"\n{tipo.upper()}".ljust(60," "))
-            for pais in df[df['tipo']==tipo]['pais'].dropna().unique():
-                preview.append(f"  {pais.upper()}")
-                grupo = df[(df['tipo'] == tipo) & (df['pais'] == pais)]
-                for i, row in grupo.iterrows():
-                    contagem[tipo_label] = contagem.get(tipo_label,0) + 1
-                    desc = row['descricao']
-                    preco = f"R$ {row['preco_base']:.2f}"
-                    pvenda = f"R$ {row['preco_de_venda']:.2f}"
-                    regiao = row['regiao']
-                    cod = int(row['cod'])
-                    preview.append(f"    {ordem_geral:02d} ({cod}) {desc}")
-                    uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]
-                    uvas_str = ", ".join([u for u in uvas if u.lower() != "nan" and u])
-                    preview.append(f"      {row['pais']} | {regiao}" + (f" | {uvas_str}" if uvas_str else ""))
-                    preview.append(f"      ({preco})  {pvenda}")
-                    amad = str(row.get("amadurecimento", ""))
-                    if amad and amad.lower() != "nan":
-                        preview[-1] += " [🛢️]"
-                    imgfile = self.get_imagem_file(str(row['cod']))
-                    x_texto = 90
-                    if imgfile:
-                        preview.append("      [COM FOTO]")
-                    ordem_geral += 1
-        preview.append("\n" + "="*70)
-        now = datetime.now().strftime("%d/%m/%Y %H:%M")
-        preview.append(f"Gerado em: {now}")
-        preview.append(
-            f"Brancos: {contagem.get('Brancos',0)} | Tintos: {contagem.get('Tintos',0)} | "
-            f"Rosés: {contagem.get('Rosés',0)} | Espumantes: {contagem.get('Espumantes',0)} | "
-            f"Total: {ordem_geral-1} | Fator: {self.fator_var.get()}"
-        )
-        preview.append("Ingá Distribuidora Ltda | CNPJ 05.390.477/0002-25 Rod BR 232, KM 18,5 - S/N- Manassu - CEP 54130-340 Jaboatão - www.ingavinhos.com.br b2b.ingavinhos.com.br")
-        return "\n".join(preview)
-
-    def get_imagem_file(self, cod):
-        img_path = os.path.join(r"C:/carta/imagens", f"{cod}.png")
+def get_imagem_file(cod: str):
+    caminho_win = os.path.join(r"C:/carta/imagens", f"{cod}.png")
+    if os.path.exists(caminho_win):
+        return caminho_win
+    for ext in ['.png', '.jpg', '.jpeg', '.PNG', '.JPG', '.JPEG']:
+        img_path = os.path.join(IMAGEM_DIR, f"{cod}{ext}")
         if os.path.exists(img_path):
-            return img_path
-        for ext in ['.png', '.jpg', '.jpeg', '.PNG', '.JPG', '.JPEG']:
-            img_path = os.path.join(IMAGEM_DIR, f"{cod}{ext}")
-            if os.path.exists(img_path):
-                return os.path.abspath(img_path)
+            return os.path.abspath(img_path)
+    try:
         for fname in os.listdir(IMAGEM_DIR):
             if fname.startswith(str(cod)):
                 return os.path.abspath(os.path.join(IMAGEM_DIR, fname))
-        return None
+    except Exception:
+        pass
+    return None
 
-    def generate_pdf_layout(self):
-        if not self.selected_indices:
-            messagebox.showinfo("Atenção", "Selecione ao menos um vinho")
-            return
-        df = self.data.loc[list(self.selected_indices)].copy()
-        df['preco_de_venda'] = [self.manual_prices.get(idx, row.get('preco_de_venda', row['preco_base']*row.get('fator',2))) for idx, row in df.iterrows()]
-        df['fator'] = [self.manual_fat.get(idx, row.get('fator',2.0)) for idx, row in df.iterrows()]
-        df = df.sort_values(['tipo', 'pais', 'descricao'])
-        filename = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
-        if filename:
-            self.export_pdf(df, filename, "Sugestão Carta de Vinhos", self.title_var.get(), self.logo_path)
-            messagebox.showinfo("PDF", "PDF gerado com sucesso!")
+def atualiza_coluna_preco_base(df: pd.DataFrame, flag: str, fator_global: float):
+    # define preco_base pela flag escolhida
+    base = df[flag] if flag in df.columns else df.get("preco1", 0.0)
+    df["preco_base"] = to_float_series(base, default=0.0)
+    # fator: se NaN/<=0, usa fator_global
+    if "fator" not in df.columns:
+        df["fator"] = fator_global
+    df["fator"] = to_float_series(df["fator"], default=fator_global)
+    df["fator"] = df["fator"].apply(lambda x: fator_global if pd.isna(x) or x <= 0 else x)
+    # preco_de_venda = preco_base * fator
+    df["preco_de_venda"] = (df["preco_base"].astype(float) * df["fator"].astype(float)).astype(float)
+    return df
 
-    def export_pdf(self, df, filename, titulo, cliente, logo_path=None):
-        c = canvas.Canvas(filename, pagesize=A4)
-        width, height = A4
+def ordenar_para_saida(df):
+    def normaliza_tipo(t):
+        t = str(t).strip().lower()
+        if "espum" in t: return "Espumantes"
+        if "branc" in t: return "Brancos"
+        if "ros" in t: return "Rosés"
+        if "tint" in t: return "Tintos"
+        if "fris" in t: return "Frisantes"
+        if "forti" in t: return "Fortificados"
+        if "sobrem" in t: return "Vinhos de sobremesa"
+        if "licor" in t: return "Licorosos"
+        return t.title()
+    tipos_norm = df.get("tipo", pd.Series([""]*len(df))).astype(str).map(normaliza_tipo)
+    ordem_map = {t: i for i, t in enumerate(TIPO_ORDEM_FIXA)}
+    ordem = tipos_norm.map(lambda x: ordem_map.get(x, 999))
+    df2 = df.copy()
+    df2["__tipo_ordem"] = ordem
+    cols_exist = [c for c in ["__tipo_ordem","pais","descricao"] if c in df2.columns]
+    return df2.sort_values(cols_exist).drop(columns=["__tipo_ordem"], errors="ignore")
 
-        # Logo cliente (se houver)
-        if logo_path and os.path.exists(logo_path):
-            c.drawImage(ImageReader(logo_path), 40, height-60, width=120, height=40, mask='auto')
-        # Logo Ingá SEMPRE no topo direito
-        logo_inga_path = os.path.join(CARTA_DIR, "logo_inga.png")
-        if os.path.exists(logo_inga_path):
-            c.drawImage(logo_inga_path, width-80, height-40, width=48, height=24, mask='auto')
+def add_pdf_footer(c, contagem, total_rotulos, fator_geral):
+    from reportlab.lib.pagesizes import A4
+    width, height = A4
+    y_rodape = 35
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    c.setLineWidth(0.4)
+    c.line(30, y_rodape+32, width-30, y_rodape+32)
+    c.setFont("Helvetica", 5)
+    c.drawString(32, y_rodape+20, f"Gerado em: {now}")
+    try:
+        fator_str = f"{float(fator_geral):.2f}"
+    except Exception:
+        fator_str = str(fator_geral)
+    c.setFont("Helvetica-Bold", 6)
+    c.drawString(32, y_rodape+7,
+        f"Brancos: {contagem.get('Brancos',0)} | Tintos: {contagem.get('Tintos',0)} | "
+        f"Rosés: {contagem.get('Rosés',0)} | Espumantes: {contagem.get('Espumantes',0)} | "
+        f"Total: {int(total_rotulos)} | Fator: {fator_str}")
+    c.setFont("Helvetica", 5)
+    c.drawString(32, y_rodape-5, "Ingá Distribuidora Ltda | CNPJ 05.390.477/0002-25 Rod BR 232, KM 18,5 - S/N- Manassu - CEP 54130-340 Jaboatão")
+    c.setFont("Helvetica-Bold", 6)
+    c.drawString(width-190, y_rodape-5, "b2b.ingavinhos.com.br")
 
-        x_texto = 90
-        y = height - 40
-        c.setFont("Helvetica-Bold", 16)
-        c.drawCentredString(width/2, y, titulo)
+def gerar_pdf(df, titulo, cliente, inserir_foto, logo_cliente_bytes=None):
+    from reportlab.lib.pagesizes import A4
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+
+    if logo_cliente_bytes:
+        try:
+            c.drawImage(ImageReader(io.BytesIO(logo_cliente_bytes)), 40, height-60, width=120, height=40, mask='auto')
+        except Exception:
+            pass
+    if os.path.exists(LOGO_PADRAO):
+        try:
+            c.drawImage(LOGO_PADRAO, width-80, height-40, width=48, height=24, mask='auto')
+        except Exception:
+            pass
+
+    x_texto = 90
+    y = height - 40
+    c.setFont("Helvetica-Bold", 16)
+    c.drawCentredString(width/2, y, titulo)
+    y -= 20
+    if cliente:
+        c.setFont("Helvetica", 10)
+        c.drawCentredString(width/2, y, f"Cliente: {cliente}")
         y -= 20
-        if cliente:
-            c.setFont("Helvetica", 10)
-            c.drawCentredString(width/2, y, f"Cliente: {cliente}")
-            y -= 20
-        ordem_geral = 1
-        contagem = {'Brancos':0, 'Tintos':0, 'Rosés':0, 'Espumantes':0, 'outros':0}
-        tipo_map = {'branco':'Brancos', 'tinto':'Tintos', 'rose':'Rosés', 'rosé':'Rosés', 'espumante':'Espumantes'}
-        for tipo in df['tipo'].dropna().unique():
-            tipo_label = next((lbl for k,lbl in tipo_map.items() if k in str(tipo).lower()), 'outros')
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(x_texto, y, tipo.upper())
-            y -= 14
-            for pais in df[df['tipo']==tipo]['pais'].dropna().unique():
-                c.setFont("Helvetica-Bold", 8)
-                c.drawString(x_texto, y, pais.upper())
-                y -= 12
-                grupo = df[(df['tipo'] == tipo) & (df['pais'] == pais)]
-                for i, row in grupo.iterrows():
-                    contagem[tipo_label] = contagem.get(tipo_label,0) + 1
-                    c.setFont("Helvetica", 6)
-                    c.drawString(x_texto, y, f"{ordem_geral:02d} ({int(row['cod'])})")
-                    c.setFont("Helvetica-Bold", 7)
-                    c.drawString(x_texto+55, y, row['descricao'])
-                    uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]
-                    uvas_str = ", ".join([u for u in uvas if u.lower() != "nan" and u])
-                    regiao_str = f"{row['pais']} | {row['regiao']}"
-                    if uvas_str:
-                        regiao_str += f" | {uvas_str}"
-                    c.setFont("Helvetica", 5)
-                    c.drawString(x_texto+55, y-10, regiao_str)
-                    amad = str(row.get("amadurecimento", ""))
-                    if amad and amad.lower() != "nan":
-                        c.setFont("Helvetica", 7)
-                        c.drawString(220, y-7, "🛢️")
-                    c.setFont("Helvetica", 5)
-                    c.drawRightString(width-120, y, f"(R$ {row['preco_base']:.2f})")
-                    c.setFont("Helvetica-Bold", 7)
-                    c.drawRightString(width-40, y, f"R$ {row['preco_de_venda']:.2f}")
 
-                    imgfile = self.get_imagem_file(str(row['cod']))
-                    if self.inserir_foto_var.get() and imgfile:
+    ordem_geral = 1
+    contagem = {'Brancos':0, 'Tintos':0, 'Rosés':0, 'Espumantes':0, 'outros':0}
+    df_sorted = ordenar_para_saida(df)
+
+    for tipo in df_sorted['tipo'].fillna("").astype(str).unique():
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(x_texto, y, str(tipo).upper()); y -= 14
+        for pais in df_sorted[df_sorted['tipo']==tipo]['pais'].dropna().unique():
+            c.setFont("Helvetica-Bold", 8)
+            c.drawString(x_texto, y, str(pais).upper()); y -= 12
+            grupo = df_sorted[(df_sorted['tipo']==tipo) & (df_sorted['pais']==pais)]
+            for _, row in grupo.iterrows():
+                t = str(tipo).lower()
+                if "branc" in t: contagem["Brancos"] += 1
+                elif "tint" in t: contagem["Tintos"] += 1
+                elif "ros" in t: contagem["Rosés"] += 1
+                elif "espum" in t: contagem["Espumantes"] += 1
+                else: contagem["outros"] += 1
+
+                c.setFont("Helvetica", 6)
+                try: codtxt = f"{int(row['cod'])}"
+                except Exception: codtxt = str(row.get('cod',""))
+                c.drawString(x_texto, y, f"{ordem_geral:02d} ({codtxt})")
+                c.setFont("Helvetica-Bold", 7)
+                c.drawString(x_texto+55, y, str(row['descricao']))
+                uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]
+                uvas = [u for u in uvas if u and u.lower() != "nan"]
+                regiao_str = f"{row.get('pais','')} | {row.get('regiao','')}"
+                if uvas: regiao_str += f" | {', '.join(uvas)}"
+                c.setFont("Helvetica", 5); c.drawString(x_texto+55, y-10, regiao_str)
+
+                amad = str(row.get("amadurecimento", ""))
+                if amad and amad.lower() != "nan":
+                    c.setFont("Helvetica", 7); c.drawString(220, y-7, "🛢️")
+
+                c.setFont("Helvetica", 5)
+                try: c.drawRightString(width-120, y, f"(R$ {float(row['preco_base']):.2f})")
+                except Exception: c.drawRightString(width-120, y, "(R$ -)")
+                c.setFont("Helvetica-Bold", 7)
+                try: c.drawRightString(width-40, y, f"R$ {float(row['preco_de_venda']):.2f}")
+                except Exception: c.drawRightString(width-40, y, "R$ -")
+
+                if inserir_foto:
+                    imgfile = get_imagem_file(str(row.get('cod','')))
+                    if imgfile:
                         try:
-                            c.drawImage(imgfile, x_texto+340, y-2, width=40, height=30, mask='auto')
-                        except Exception:
-                            pass
-                        y -= 28
+                            c.drawImage(imgfile, x_texto+340, y-2, width=40, height=30, mask='auto'); y -= 28
+                        except Exception: y -= 20
                     else:
                         y -= 20
+                else:
+                    y -= 20
 
-                    ordem_geral += 1
-                    if y < 100:
-                        self.add_pdf_footer(c, contagem, ordem_geral-1, self.fator_var.get())
-                        c.showPage()
-                        y = height - 40
-                        # Repete os cabeçalhos a cada nova página
-                        if logo_path and os.path.exists(logo_path):
-                            c.drawImage(ImageReader(logo_path), 40, height-60, width=120, height=40, mask='auto')
-                        if os.path.exists(logo_inga_path):
-                            c.drawImage(logo_inga_path, width-80, height-40, width=48, height=24, mask='auto')
-                        c.setFont("Helvetica-Bold", 16)
-                        c.drawCentredString(width/2, y, titulo)
-                        y -= 20
-                        if cliente:
-                            c.setFont("Helvetica", 10)
-                            c.drawCentredString(width/2, y, f"Cliente: {cliente}")
-                            y -= 20
-        self.add_pdf_footer(c, contagem, ordem_geral-1, self.fator_var.get())
-        c.save()
+                ordem_geral += 1
 
-    def add_pdf_footer(self, c, contagem, total_rotulos, fator_geral):
-        width, height = A4
-        y_rodape = 35
-        now = datetime.now().strftime("%d/%m/%Y %H:%M")
-        c.setLineWidth(0.4)
-        c.line(30, y_rodape+32, width-30, y_rodape+32)
-        c.setFont("Helvetica", 5)
-        c.drawString(32, y_rodape+20, f"Gerado em: {now}")
-        c.setFont("Helvetica-Bold", 6)
-        c.drawString(32, y_rodape+7,
-            f"Brancos: {contagem.get('Brancos',0)} | Tintos: {contagem.get('Tintos',0)} | "
-            f"Rosés: {contagem.get('Rosés',0)} | Espumantes: {contagem.get('Espumantes',0)} | "
-            f"Total: {total_rotulos} | Fator: {fator_geral}")
-        c.setFont("Helvetica", 5)
-        c.drawString(32, y_rodape-5, "Ingá Distribuidora Ltda | CNPJ 05.390.477/0002-25 Rod BR 232, KM 18,5 - S/N- Manassu - CEP 54130-340 Jaboatão")
-        c.setFont("Helvetica-Bold", 6)
-        c.drawString(width-190, y_rodape-5, "b2b.ingavinhos.com.br")
+                if y < 100:
+                    add_pdf_footer(c, contagem, ordem_geral-1, fator_geral=df.get('fator', pd.Series([0])).median())
+                    c.showPage()
+                    y = height - 40
+                    if logo_cliente_bytes:
+                        try: c.drawImage(ImageReader(io.BytesIO(logo_cliente_bytes)), 40, height-60, width=120, height=40, mask='auto')
+                        except Exception: pass
+                    if os.path.exists(LOGO_PADRAO):
+                        try: c.drawImage(LOGO_PADRAO, width-80, height-40, width=48, height=24, mask='auto')
+                        except Exception: pass
+                    c.setFont("Helvetica-Bold", 16); c.drawCentredString(width/2, y, titulo); y -= 20
+                    if cliente: c.setFont("Helvetica", 10); c.drawCentredString(width/2, y, f"Cliente: {cliente}"); y -= 20
 
-    def export_to_excel_layout(self):
-        if not self.selected_indices:
-            messagebox.showinfo("Atenção", "Selecione ao menos um vinho para exportar.")
-            return
-        df = self.data.loc[list(self.selected_indices)].copy()
-        df['preco_de_venda'] = [self.manual_prices.get(idx, row.get('preco_de_venda', row['preco_base']*row.get('fator',2))) for idx, row in df.iterrows()]
-        df['fator'] = [self.manual_fat.get(idx, row.get('fator',2.0)) for idx, row in df.iterrows()]
-        df = df.sort_values(['tipo', 'pais', 'descricao'])
+    add_pdf_footer(c, contagem, ordem_geral-1, fator_geral=df.get('fator', pd.Series([0])).median())
+    c.save(); buffer.seek(0)
+    return buffer
 
-        filename = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")])
-        if filename:
-            self.export_to_excel_like_pdf_layout(df, filename)
-            messagebox.showinfo("Excel", "Arquivo Excel criado com sucesso!")
-
-    def export_to_excel_like_pdf_layout(self, df, filename):
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Sugestão"
-
-        row_num = 1
-        ordem_geral = 1
-
-        tipos = df['tipo'].dropna().unique()
-        for tipo in tipos:
+def exportar_excel_like_pdf(df, inserir_foto=True):
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Sugestão"
+    row_num = 1; ordem_geral = 1
+    df_sorted = ordenar_para_saida(df)
+    for tipo in df_sorted['tipo'].fillna("").unique():
+        ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=8)
+        cell = ws.cell(row=row_num, column=1, value=str(tipo).upper()); cell.font = Font(bold=True, size=18); row_num += 1
+        for pais in df_sorted[df_sorted['tipo'] == tipo]['pais'].dropna().unique():
             ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=8)
-            cell = ws.cell(row=row_num, column=1, value=tipo.upper())
-            cell.font = Font(bold=True, size=18)
-            row_num += 1
-
-            paises = df[df['tipo'] == tipo]['pais'].dropna().unique()
-            for pais in paises:
-                ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=8)
-                cell = ws.cell(row=row_num, column=1, value=pais.upper())
-                cell.font = Font(bold=True, size=14)
-                row_num += 1
-
-                grupo = df[(df['tipo'] == tipo) & (df['pais'] == pais)]
-                for i, row in grupo.iterrows():
-                    ws.cell(row=row_num, column=1, value=f"{ordem_geral:02d} ({int(row['cod'])})").font = Font(size=11)
-                    ws.cell(row=row_num, column=2, value=row['descricao']).font = Font(bold=True, size=12)
-                    imgfile = self.get_imagem_file(str(row['cod']))
-                    x_texto = 90
-                    if self.inserir_foto_var.get() and imgfile:
+            cell = ws.cell(row=row_num, column=1, value=str(pais).upper()); cell.font = Font(bold=True, size=14); row_num += 1
+            grupo = df_sorted[(df_sorted['tipo'] == tipo) & (df_sorted['pais'] == pais)]
+            for _, row in grupo.iterrows():
+                ws.cell(row=row_num, column=1, value=f"{ordem_geral:02d} ({int(row['cod']) if str(row['cod']).isdigit() else ''})").font = Font(size=11)
+                ws.cell(row=row_num, column=2, value=str(row['descricao'])).font = Font(bold=True, size=12)
+                if inserir_foto:
+                    imgfile = get_imagem_file(str(row.get('cod','')))
+                    if imgfile and os.path.exists(imgfile):
                         try:
-                            img = XLImage(imgfile)
-                            img.width, img.height = 32, 24
-                            cell_ref = f"C{row_num}"
-                            ws.add_image(img, cell_ref)
+                            img = XLImage(imgfile); img.width, img.height = 32, 24; ws.add_image(img, f"C{row_num}")
+                        except Exception: pass
+                try:
+                    base_val = float(row['preco_base']); pv_val = float(row['preco_de_venda'])
+                    base_str = f"(R$ {base_val:.2f})"; pv_str = f"R$ {pv_val:.2f}"
+                except Exception:
+                    base_str = "(R$ -)"; pv_str = "R$ -"
+                ws.cell(row=row_num, column=7, value=base_str).alignment = Alignment(horizontal='right'); ws.cell(row=row_num, column=7).font = Font(size=10)
+                ws.cell(row=row_num, column=8, value=pv_str).font = Font(bold=True, size=13); ws.cell(row=row_num, column=8).alignment = Alignment(horizontal='right')
+                uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]; uvas = [u for u in uvas if u and u.lower() != "nan"]
+                regiao_str = f"{row.get('pais','')} | {row.get('regiao','')}"; 
+                if uvas: regiao_str += f" | {', '.join(uvas)}"
+                ws.cell(row=row_num+1, column=2, value=regiao_str).font = Font(size=10)
+                amad = str(row.get("amadurecimento", ""))
+                if amad and amad.lower() != "nan":
+                    ws.cell(row=row_num+1, column=3, value="🛢️").font = Font(size=10)
+                row_num += 2; ordem_geral += 1
+    stream = io.BytesIO(); wb.save(stream); stream.seek(0); return stream
+
+# ===================== APP =====================
+def main():
+    st.set_page_config(page_title="Sugestão de Carta de Vinhos", layout="wide")
+    garantir_pastas()
+
+    # Estado
+    if "selected_idxs" not in st.session_state:
+        st.session_state.selected_idxs = set()
+    if "prev_view_state" not in st.session_state:
+        st.session_state.prev_view_state = {}
+    if "manual_fat" not in st.session_state:
+        st.session_state.manual_fat = {}
+    if "manual_preco_venda" not in st.session_state:
+        st.session_state.manual_preco_venda = {}
+    if "cadastrados" not in st.session_state:
+        st.session_state.cadastrados = []
+
+    st.markdown("### Sugestão de Carta de Vinhos")
+
+    with st.container():
+        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.4,1.2,1,1,1.6,0.9,1.2,1.6])
+        with c1:
+            cliente = st.text_input("Nome do Cliente", value="", placeholder="(opcional)", key="cliente_nome")
+        with c2:
+            logo_cliente = st.file_uploader("Carregar logo (cliente)", type=["png","jpg","jpeg"], key="logo_cliente")
+            logo_bytes = logo_cliente.read() if logo_cliente else None
+        with c3:
+            inserir_foto = st.checkbox("Inserir foto no PDF/Excel", value=True, key="chk_foto")
+        with c4:
+            preco_flag = st.selectbox("Tabela de preço",
+                                      ["preco1", "preco2", "preco15", "preco38", "preco39", "preco55", "preco63"],
+                                      index=0, key="preco_flag")
+        with c5:
+            termo_global = st.text_input("Buscar", value="", key="termo_global")
+        with c6:
+            fator_global = st.number_input("Fator", min_value=0.0, value=2.0, step=0.1, key="fator_global_input")
+        with c7:
+            resetar = st.button("Resetar/Mostrar Todos", key="btn_resetar")
+        with c8:
+            caminho_planilha = st.text_input("Arquivo de dados", value="vinhos1.xls",
+                                             help="Caminho do arquivo XLS/XLSX (ex.: vinhos1.xls)",
+                                             key="caminho_planilha")
+
+    # Carrega DF base
+    df = ler_excel_vinhos(caminho_planilha)
+    df = atualiza_coluna_preco_base(df, preco_flag, fator_global=float(fator_global))
+
+    # Integra itens cadastrados (sessão)
+    if st.session_state.cadastrados:
+        cad_df = pd.DataFrame(st.session_state.cadastrados)
+        for col in df.columns:
+            if col not in cad_df.columns:
+                cad_df[col] = None
+        cad_df["idx"] = pd.to_numeric(cad_df["idx"], errors="coerce").fillna(-1).astype(int)
+        df = pd.concat([df, cad_df[df.columns]], ignore_index=True)
+
+    # Sidebar de filtros
+    st.sidebar.header("Filtros")
+    pais_opc = [""] + sorted([p for p in df["pais"].dropna().astype(str).unique().tolist() if p])
+    tipo_opc = [""] + sorted([t for t in df["tipo"].dropna().astype(str).unique().tolist() if t])
+    desc_opc = [""] + sorted([d for d in df["descricao"].dropna().astype(str).unique().tolist() if d])
+    regiao_opc = [""] + sorted([r for r in df["regiao"].dropna().astype(str).unique().tolist() if r])
+    cod_opc = [""] + sorted([str(c) for c in df["cod"].dropna().astype(str).unique().tolist()])
+
+    filt_pais = st.sidebar.selectbox("País", pais_opc, index=0, key="filt_pais")
+    filt_tipo = st.sidebar.selectbox("Tipo", tipo_opc, index=0, key="filt_tipo")
+    filt_desc = st.sidebar.selectbox("Descrição", desc_opc, index=0, key="filt_desc")
+    filt_regiao = st.sidebar.selectbox("Região", regiao_opc, index=0, key="filt_regiao")
+    filt_cod = st.sidebar.selectbox("Código", cod_opc, index=0, key="filt_cod")
+
+    colp1, colp2 = st.sidebar.columns(2)
+    with colp1:
+        preco_min = st.number_input("Preço mín (base)", min_value=0.0, value=0.0, step=1.0, key="preco_min")
+    with colp2:
+        preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=0.0, step=1.0, help="0 = sem limite", key="preco_max")
+
+    # Aplicar filtros (VIEW)
+    df_filtrado = df.copy()
+    if termo_global.strip():
+        term = termo_global.strip().lower()
+        mask = df_filtrado.apply(lambda row: term in " ".join(str(v).lower() for v in row.values), axis=1)
+        df_filtrado = df_filtrado[mask]
+    if filt_pais:
+        df_filtrado = df_filtrado[df_filtrado["pais"] == filt_pais]
+    if filt_tipo:
+        df_filtrado = df_filtrado[df_filtrado["tipo"] == filt_tipo]
+    if filt_desc:
+        df_filtrado = df_filtrado[df_filtrado["descricao"] == filt_desc]
+    if filt_regiao:
+        df_filtrado = df_filtrado[df_filtrado["regiao"] == filt_regiao]
+    if filt_cod:
+        df_filtrado = df_filtrado[df_filtrado["cod"].astype(str) == filt_cod]
+    if preco_min:
+        df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) >= float(preco_min)]
+    if preco_max and preco_max > 0:
+        df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= float(preco_max)]
+
+    if resetar:
+        df_filtrado = df.copy()
+
+    # Contagem por tipo + status seleção
+    contagem = {'Brancos': 0, 'Tintos': 0, 'Rosés': 0, 'Espumantes': 0, 'outros': 0}
+    for t, n in df_filtrado.groupby('tipo').size().items():
+        t_low = str(t).lower()
+        if "branc" in t_low: contagem['Brancos'] += int(n)
+        elif "tint" in t_low: contagem['Tintos'] += int(n)
+        elif "ros" in t_low: contagem['Rosés'] += int(n)
+        elif "espum" in t_low: contagem['Espumantes'] += int(n)
+        else: contagem['outros'] += int(n)
+    total = len(df_filtrado)
+    selecionados = len(st.session_state.selected_idxs)
+    st.caption(f"Brancos: {contagem.get('Brancos', 0)} | Tintos: {contagem.get('Tintos', 0)} | Rosés: {contagem.get('Rosés', 0)} | Espumantes: {contagem.get('Espumantes', 0)} | Total: {total} | Selecionados: {selecionados} | Fator: {float(fator_global):.2f}")
+
+    # === Grade com seleção ===
+    view_df = df_filtrado.copy()
+
+    # --- Normalização robusta + remoção de colunas duplicadas ---
+    if not isinstance(view_df, pd.DataFrame):
+        view_df = pd.DataFrame(view_df)
+    try:
+        view_df = view_df.loc[:, ~view_df.columns.duplicated()].copy()
+    except Exception:
+        pass
+    if "idx" not in view_df.columns:
+        view_df = view_df.reset_index(drop=False).rename(columns={"index": "idx"})
+    _idx_col = view_df["idx"]
+    if isinstance(_idx_col, pd.DataFrame):
+        _idx_col = _idx_col.iloc[:, 0]
+    view_df["idx"] = pd.to_numeric(_idx_col, errors="coerce").fillna(-1).astype(int)
+    if "cod" in view_df.columns:
+        _cod_col = view_df["cod"]
+        if isinstance(_cod_col, pd.DataFrame):
+            _cod_col = _cod_col.iloc[:, 0]
+        view_df["cod"] = _cod_col.astype(str)
+    else:
+        view_df["cod"] = ""
+    for _c in ["preco_base", "preco_de_venda", "fator"]:
+        if _c in view_df.columns:
+            _col = view_df[_c]
+            if isinstance(_col, pd.DataFrame):
+                _col = _col.iloc[:, 0]
+            view_df[_c] = to_float_series(_col, default=0.0)
+        else:
+            view_df[_c] = 0.0
+
+    view_df["selecionado"] = view_df["idx"].apply(lambda i: i in st.session_state.selected_idxs)
+    view_df["foto"] = view_df["cod"].apply(lambda c: "●" if get_imagem_file(str(c)) else "")
+
+    edited = st.data_editor(
+        view_df[["selecionado","foto","cod","descricao","pais","regiao","preco_base","preco_de_venda","fator","idx"]],
+        hide_index=True,
+        column_config={
+            "selecionado": st.column_config.CheckboxColumn("SELECIONADO"),
+            "foto": st.column_config.TextColumn("FOTO"),
+            "cod": st.column_config.TextColumn("COD"),
+            "descricao": st.column_config.TextColumn("DESCRICAO"),
+            "pais": st.column_config.TextColumn("PAIS"),
+            "regiao": st.column_config.TextColumn("REGIAO"),
+            "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
+            "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
+            "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
+            "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
+        },
+        use_container_width=True,
+        num_rows="dynamic",
+        key="editor_main",
+    )
+
+    # --- Persistência incremental das seleções ---
+    curr_state = {}
+    if isinstance(edited, pd.DataFrame) and not edited.empty:
+        for _, row in edited.iterrows():
+            try:
+                idx_i = int(row["idx"])
+            except Exception:
+                continue
+            sel = bool(row.get("selecionado", False))
+            curr_state[idx_i] = sel
+
+    prev_state = st.session_state.get("prev_view_state", {})
+    global_sel = set(st.session_state.selected_idxs)
+
+    to_add = {i for i, s in curr_state.items() if s and prev_state.get(i) is not True}
+    to_remove = {i for i, s in curr_state.items() if (prev_state.get(i) is True) and not s}
+
+    global_sel |= to_add
+    global_sel -= to_remove
+
+    st.session_state.selected_idxs = global_sel
+    st.session_state.prev_view_state = curr_state
+
+    # Ajustes manuais (aplicados no DF base, por idx) + recomputa preco_de_venda
+    if isinstance(edited, pd.DataFrame) and not edited.empty:
+        for _, r in edited.iterrows():
+            try:
+                idx = int(r["idx"])
+            except Exception:
+                continue
+            if pd.notnull(r.get("fator")):
+                st.session_state.manual_fat[idx] = float(r["fator"])
+            if pd.notnull(r.get("preco_de_venda")):
+                st.session_state.manual_preco_venda[idx] = float(r["preco_de_venda"])
+
+    for idx, fat in st.session_state.manual_fat.items():
+        df.loc[df["idx"]==idx, "fator"] = float(fat)
+    # caso fator <=0, usa fator_global
+    df["fator"] = to_float_series(df["fator"], default=float(fator_global))
+    df["fator"] = df["fator"].apply(lambda x: float(fator_global) if pd.isna(x) or x <= 0 else float(x))
+
+    df["preco_base"] = to_float_series(df["preco_base"], default=0.0)
+    df["preco_de_venda"] = (df["preco_base"].astype(float) * df["fator"].astype(float)).astype(float)
+
+    for idx, pv in st.session_state.manual_preco_venda.items():
+        df.loc[df["idx"]==idx, "preco_de_venda"] = float(pv)
+
+    # Botões de ação + salvar sugestão
+    cA, cB, cC, cD, cE, cF = st.columns([1,1.2,1.2,1.2,1.6,1.2])
+    with cA:
+        ver_preview = st.button("Visualizar Sugestão", key="btn_preview")
+    with cB:
+        ver_marcados = st.button("Visualizar Itens Marcados", key="btn_marcados")
+    with cC:
+        gerar_pdf_btn = st.button("Gerar PDF", key="btn_pdf")
+    with cD:
+        exportar_excel_btn = st.button("Exportar para Excel", key="btn_excel")
+    with cE:
+        nome_sugestao = st.text_input("Nome da sugestão", value="", key="nome_sugestao_input")
+    with cF:
+        salvar_sugestao_btn = st.button("Salvar Sugestão (mesclar se existir)", key="btn_salvar")
+
+    if ver_preview:
+        if not st.session_state.selected_idxs:
+            st.info("Nenhum item selecionado.")
+        else:
+            st.subheader("Pré-visualização da Sugestão")
+            df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
+            df_sel = ordenar_para_saida(df_sel)
+            preview_lines = []
+            preview_lines.append("Sugestão Carta de Vinhos")
+            if cliente:
+                preview_lines.append(f"Cliente: {cliente}")
+            preview_lines.append("="*70)
+            ordem_geral = 1
+            for tipo in df_sel['tipo'].dropna().unique():
+                preview_lines.append(f"\n{str(tipo).upper()}")
+                for pais in df_sel[df_sel['tipo']==tipo]['pais'].dropna().unique():
+                    preview_lines.append(f"  {str(pais).upper()}")
+                    grupo = df_sel[(df_sel['tipo']==tipo) & (df_sel['pais']==pais)]
+                    for _, row in grupo.iterrows():
+                        desc = row['descricao']
+                        try:
+                            preco = f"R$ {float(row['preco_base']):.2f}"
+                            pvenda = f"R$ {float(row['preco_de_venda']):.2f}"
                         except Exception:
-                            pass
-                    ws.cell(row=row_num, column=7, value=f"(R$ {row['preco_base']:.2f})").alignment = Alignment(horizontal='right')
-                    ws.cell(row=row_num, column=7).font = Font(size=10)
-                    ws.cell(row=row_num, column=8, value=f"R$ {row['preco_de_venda']:.2f}").font = Font(bold=True, size=13)
-                    ws.cell(row=row_num, column=8).alignment = Alignment(horizontal='right')
-                    uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]
-                    uvas_str = ", ".join([u for u in uvas if u.lower() != "nan" and u])
-                    regiao_str = f"{row['pais']} | {row['regiao']}"
-                    if uvas_str:
-                        regiao_str += f" | {uvas_str}"
-                    ws.cell(row=row_num+1, column=2, value=regiao_str).font = Font(size=10)
-                    amad = str(row.get("amadurecimento", ""))
-                    if amad and amad.lower() != "nan":
-                        ws.cell(row=row_num+1, column=3, value="🛢️").font = Font(size=10)
-                    row_num += 2
-                    ordem_geral += 1
+                            preco = "R$ -"; pvenda = "R$ -"
+                        try: cod = int(row['cod']) if str(row['cod']).isdigit() else ""
+                        except Exception: cod = str(row.get('cod',""))
+                        regiao = row.get('regiao',"")
+                        preview_lines.append(f"    {ordem_geral:02d} ({cod}) {desc}")
+                        uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]
+                        uvas_str = ", ".join([u for u in uvas if u and u.lower()!='nan'])
+                        linha2 = f"      {row.get('pais','')} | {regiao}"
+                        if uvas_str: linha2 += f" | {uvas_str}"
+                        preview_lines.append(linha2)
+                        preview_lines.append(f"      ({preco})  {pvenda}")
+                        if inserir_foto and get_imagem_file(str(row.get('cod',''))):
+                            preview_lines.append("      [COM FOTO]")
+                        ordem_geral += 1
+            preview_lines.append("\n" + "="*70)
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            preview_lines.append(f"Gerado em: {now}")
+            st.code("\n".join(preview_lines))
 
-        ws.column_dimensions[get_column_letter(1)].width = 13
-        ws.column_dimensions[get_column_letter(2)].width = 45
-        ws.column_dimensions[get_column_letter(3)].width = 8
-        ws.column_dimensions[get_column_letter(7)].width = 16
-        ws.column_dimensions[get_column_letter(8)].width = 16
+    if ver_marcados:
+        if not st.session_state.selected_idxs:
+            st.info("Nenhum item selecionado.")
+        else:
+            st.subheader("Itens Marcados")
+            df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
+            df_sel = df_sel[["cod","descricao","pais","regiao","preco_base","preco_de_venda","fator"]].sort_values(["pais","descricao"])
+            st.dataframe(df_sel, use_container_width=True)
 
-        wb.save(filename)
+    if gerar_pdf_btn:
+        if not st.session_state.selected_idxs:
+            st.warning("Selecione ao menos um vinho.")
+        else:
+            df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
+            df_sel = ordenar_para_saida(df_sel)
+            pdf_buffer = gerar_pdf(df_sel, "Sugestão Carta de Vinhos", cliente, inserir_foto, logo_bytes)
+            st.download_button("Baixar PDF", data=pdf_buffer, file_name="sugestao_carta_vinhos.pdf", mime="application/pdf", key="dl_pdf")
 
-    # ========== ABA 2: SUGESTÕES SALVAS ==========
-    def build_salvas_tab(self):
-        f = self.frame_salvas
-        self.listbox_salvas = tk.Listbox(f, width=40, font=("Arial", 10))
-        self.listbox_salvas.pack(side='left', fill='y', padx=5, pady=5)
-        self.listbox_salvas.bind('<<ListboxSelect>>', self.carregar_sugestao_lista)
-        self.atualiza_listbox_salvas()
-        btn_frame = ttk.Frame(f)
-        btn_frame.pack(side='left', fill='both', expand=True, padx=5, pady=5)
-        ttk.Button(btn_frame, text="Excluir Sugestão", command=self.excluir_sugestao_lista).pack(pady=2)
-        ttk.Button(btn_frame, text="Editar Itens", command=self.editar_sugestao_lista).pack(pady=2)
-        ttk.Button(btn_frame, text="Adicionar Outros Itens", command=self.trazer_todos_apos_salva).pack(pady=2)
-        ttk.Label(btn_frame, text="Ao editar, vá para aba Sugestão para salvar.", font=("Arial", 8)).pack(pady=3)
+    if exportar_excel_btn:
+        if not st.session_state.selected_idxs:
+            st.warning("Selecione ao menos um vinho.")
+        else:
+            df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
+            df_sel = ordenar_para_saida(df_sel)
+            xlsx = exportar_excel_like_pdf(df_sel, inserir_foto=inserir_foto)
+            st.download_button("Baixar Excel", data=xlsx, file_name="sugestao_carta_vinhos.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_xlsx")
 
-    def salvar_sugestao_dialog(self):
-        nome = simpledialog.askstring("Salvar sugestão", "Nome da sugestão:")
+    if salvar_sugestao_btn:
+        garantir_pastas()
+        nome = nome_sugestao.strip()
         if not nome:
-            return
-        if not self.selected_indices:
-            messagebox.showinfo("Sugestão", "Selecione produtos para salvar.")
-            return
-        indices = list(self.selected_indices)
-        path = os.path.join(SUGESTOES_DIR, f"{nome}.txt")
-        with open(path, "w") as f:
-            f.write(",".join(map(str, indices)))
-        messagebox.showinfo("Sugestão", f"Sugestão '{nome}' salva.")
-        self.atualiza_listbox_salvas()
+            st.warning("Informe um nome para a sugestão antes de salvar.")
+        elif not st.session_state.selected_idxs:
+            st.info("Selecione produtos para salvar.")
+        else:
+            path = os.path.join(SUGESTOES_DIR, f"{nome}.txt")
+            new_set = set(st.session_state.selected_idxs)
+            if os.path.exists(path):
+                try:
+                    with open(path) as f:
+                        old = [int(x) for x in f.read().strip().split(",") if x]
+                    new_set |= set(old)
+                except Exception:
+                    pass
+            try:
+                with open(path, "w") as f:
+                    f.write(",".join(map(str, sorted(list(new_set)))))
+                st.success(f"Sugestão '{nome}' salva (mesclada) em {path}.")
+            except Exception as e:
+                st.error(f"Erro ao salvar: {e}")
 
-    def carregar_sugestao_lista(self, event=None):
-        sel = self.listbox_salvas.curselection()
-        if not sel:
-            return
-        nome = self.listbox_salvas.get(sel[0])
-        path = os.path.join(SUGESTOES_DIR, f"{nome}.txt")
-        if not os.path.exists(path):
-            messagebox.showerror("Erro", "Arquivo da sugestão não encontrado.")
-            return
-        with open(path) as f:
-            indices = [int(x) for x in f.read().strip().split(",") if x]
-        self.filtered_data = self.data.loc[indices].copy()
-        self.selected_indices = set(indices)
-        self.notebook.select(self.frame_sugestao)
-        self.refresh_table()
+    # Abas
+    st.markdown("---")
+    tab1, tab2 = st.tabs(["Sugestões Salvas", "Cadastro de Vinhos"])
 
-    def trazer_todos_apos_salva(self):
-        self.filtered_data = self.data.copy()
-        self.refresh_table()
+    with tab1:
+        garantir_pastas()
+        arquivos = [f for f in os.listdir(SUGESTOES_DIR) if f.endswith(".txt")]
+        sel = st.selectbox("Abrir sugestão", [""] + [a[:-4] for a in arquivos], key="sel_sugestao")
 
-    def excluir_sugestao_lista(self):
-        sel = self.listbox_salvas.curselection()
-        if not sel:
-            return
-        nome = self.listbox_salvas.get(sel[0])
-        path = os.path.join(SUGESTOES_DIR, f"{nome}.txt")
-        if os.path.exists(path):
-            os.remove(path)
-        self.atualiza_listbox_salvas()
-        messagebox.showinfo("Sugestão", f"Sugestão '{nome}' excluída.")
+        # Ao selecionar, carregar automaticamente e mostrar a RELAÇÃO abaixo
+        sugestao_indices = []
+        if sel:
+            path = os.path.join(SUGESTOES_DIR, f"{sel}.txt")
+            if os.path.exists(path):
+                try:
+                    with open(path) as f:
+                        sugestao_indices = [int(x) for x in f.read().strip().split(",") if x]
+                    # Carrega a sugestão (substitui seleção atual)
+                    st.session_state.selected_idxs = set(sugestao_indices)
+                    st.info(f"Sugestão '{sel}' carregada: {len(sugestao_indices)} itens.")
+                except Exception as e:
+                    st.error(f"Erro ao carregar '{sel}': {e}")
 
-    def editar_sugestao_lista(self):
-        self.carregar_sugestao_lista()
+        # Relação da sugestão (abaixo da seleção)
+        if sugestao_indices:
+            st.subheader("Relação da Sugestão")
+            df_rel = df[df["idx"].isin(sugestao_indices)].copy()
+            if not df_rel.empty:
+                df_rel = df_rel[["cod","descricao","pais","regiao","preco_base","fator","preco_de_venda"]].sort_values(["pais","descricao"])
+                st.dataframe(df_rel, use_container_width=True, height=min(500, 50 + 28*len(df_rel)))
+            else:
+                st.caption("Nenhum item encontrado no DF atual para esses índices.")
 
-    def atualiza_listbox_salvas(self):
-        self.listbox_salvas.delete(0, tk.END)
-        files = [f for f in os.listdir(SUGESTOES_DIR) if f.endswith(".txt")]
-        for f in files:
-            self.listbox_salvas.insert(tk.END, f[:-4])
+        colx, coly, colz = st.columns([1,1,1])
+        with colx:
+            if st.button("Excluir sugestão selecionada", key="btn_excluir_sug"):
+                if sel:
+                    try:
+                        os.remove(os.path.join(SUGESTOES_DIR, f"{sel}.txt"))
+                        st.success(f"Sugestão '{sel}' excluída.")
+                        st.experimental_rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao excluir: {e}")
+                else:
+                    st.info("Selecione uma sugestão na lista.")
+        with coly:
+            if st.button("Salvar alterações nesta sugestão (mesclar)", key="btn_merge_sug"):
+                if sel:
+                    path = os.path.join(SUGESTOES_DIR, f"{sel}.txt")
+                    try:
+                        old = []
+                        if os.path.exists(path):
+                            with open(path) as f:
+                                old = [int(x) for x in f.read().strip().split(",") if x]
+                        new_set = set(old) | set(st.session_state.selected_idxs)
+                        with open(path, "w") as f:
+                            f.write(",".join(map(str, sorted(list(new_set)))))
+                        st.success(f"Sugestão '{sel}' atualizada (itens mesclados).")
+                    except Exception as e:
+                        st.error(f"Erro ao salvar: {e}")
+                else:
+                    st.info("Selecione uma sugestão na lista.")
+        with colz:
+            if st.button("Limpar seleção atual", key="btn_limpar_sel"):
+                st.session_state.selected_idxs = set()
+                st.experimental_rerun()
 
-    # ========== ABA 3: CADASTRO DE VINHOS ==========
-    def build_cadastro_tab(self):
-        f = self.frame_cadastro
-        entry_frame = ttk.LabelFrame(f, text="Cadastrar Novo Produto")
-        entry_frame.pack(fill='x', padx=5, pady=5)
-        self.new_cod_var = tk.StringVar()
-        self.new_desc_var = tk.StringVar()
-        self.new_preco_var = tk.StringVar()
-        self.new_fat_var = tk.StringVar(value="2.0")
-        self.new_preco_venda_var = tk.StringVar()
-        self.new_pais_var = tk.StringVar()
-        self.new_regiao_var = tk.StringVar()
-        ttk.Label(entry_frame, text="Código:", font=("Arial", 8)).grid(row=0, column=0, padx=2)
-        ttk.Entry(entry_frame, textvariable=self.new_cod_var, width=8, font=("Arial", 8)).grid(row=0, column=1, padx=2)
-        ttk.Label(entry_frame, text="Descrição:", font=("Arial", 8)).grid(row=0, column=2, padx=2)
-        ttk.Entry(entry_frame, textvariable=self.new_desc_var, width=20, font=("Arial", 8)).grid(row=0, column=3, padx=2)
-        ttk.Label(entry_frame, text="Preço:", font=("Arial", 8)).grid(row=0, column=4, padx=2)
-        ttk.Entry(entry_frame, textvariable=self.new_preco_var, width=8, font=("Arial", 8)).grid(row=0, column=5, padx=2)
-        ttk.Label(entry_frame, text="Fator:", font=("Arial", 8)).grid(row=0, column=6, padx=2)
-        ttk.Entry(entry_frame, textvariable=self.new_fat_var, width=6, font=("Arial", 8)).grid(row=0, column=7, padx=2)
-        ttk.Label(entry_frame, text="Preço Venda:", font=("Arial", 8)).grid(row=0, column=8, padx=2)
-        ttk.Entry(entry_frame, textvariable=self.new_preco_venda_var, width=8, font=("Arial", 8)).grid(row=0, column=9, padx=2)
-        ttk.Label(entry_frame, text="País:", font=("Arial", 8)).grid(row=0, column=10, padx=2)
-        ttk.Entry(entry_frame, textvariable=self.new_pais_var, width=8, font=("Arial", 8)).grid(row=0, column=11, padx=2)
-        ttk.Label(entry_frame, text="Região:", font=("Arial", 8)).grid(row=0, column=12, padx=2)
-        ttk.Entry(entry_frame, textvariable=self.new_regiao_var, width=10, font=("Arial", 8)).grid(row=0, column=13, padx=2)
-        ttk.Button(entry_frame, text="Cadastrar", command=self.cadastrar_produto).grid(row=0, column=14, padx=5)
+    with tab2:
+        st.caption("Cadastrar novo produto (entra apenas na sessão atual; salve no seu Excel depois, se quiser persistir).")
+        c1b, c2b, c3b, c4b, c5b, c6b, c7b = st.columns([1,2,1,1,1,1,1.2])
+        with c1b:
+            new_cod = st.text_input("Código", key="cad_cod")
+        with c2b:
+            new_desc = st.text_input("Descrição", key="cad_desc")
+        with c3b:
+            new_preco = st.number_input("Preço", min_value=0.0, value=0.0, step=0.01, key="cad_preco")
+        with c4b:
+            new_fat = st.number_input("Fator", min_value=0.0, value=float(fator_global), step=0.1, key="cad_fator")
+        with c5b:
+            new_pv = st.number_input("Preço Venda", min_value=0.0, value=0.0, step=0.01, key="cad_pv")
+        with c6b:
+            new_pais = st.text_input("País", key="cad_pais")
+        with c7b:
+            new_regiao = st.text_input("Região", key="cad_regiao")
 
-        self.tree_cadastro = ttk.Treeview(f, columns=("cod","descricao","preco_base","fator","preco_de_venda","pais","regiao"), show="headings", height=10)
-        for col, w in zip(("cod","descricao","preco_base","fator","preco_de_venda","pais","regiao"), [50,220,70,70,80,80,80]):
-            self.tree_cadastro.heading(col, text=col.upper())
-            self.tree_cadastro.column(col, width=w)
-        self.tree_cadastro.pack(fill="both", expand=True, padx=5, pady=5)
-        self.tree_cadastro.tag_configure('manual', font=('Arial', 8))
-        ttk.Button(f, text="Excluir Produto Selecionado", command=self.excluir_produto).pack(pady=2)
-        self.refresh_tree_cadastro()
-
-    def refresh_tree_cadastro(self):
-        for i in self.tree_cadastro.get_children():
-            self.tree_cadastro.delete(i)
-        for idx, row in self.data.iterrows():
-            if row.get('cadastrado_manual', False):
-                self.tree_cadastro.insert('', 'end', iid=idx, values=(
-                    row.get('cod', ''),
-                    row.get('descricao', ''),
-                    row.get('preco_base', ''),
-                    row.get('fator', ''),
-                    row.get('preco_de_venda', ''),
-                    row.get('pais', ''),
-                    row.get('regiao', ''),
-                ), tags=('manual',))
-
-    def cadastrar_produto(self):
-        try:
-            cod = int(self.new_cod_var.get())
-            desc = self.new_desc_var.get()
-            preco = float(self.new_preco_var.get())
-            fat = float(self.new_fat_var.get())
-            preco_venda = float(self.new_preco_venda_var.get()) if self.new_preco_venda_var.get() else preco * fat
-            pais = self.new_pais_var.get()
-            regiao = self.new_regiao_var.get()
-            if not desc or not pais or not regiao:
-                raise Exception("Preencha todos os campos obrigatórios.")
-            novo = pd.DataFrame([{
-                "cod": cod,
-                "descricao": desc,
-                "preco_base": preco,
-                "fator": fat,
-                "preco_de_venda": preco_venda,
-                "pais": pais,
-                "regiao": regiao,
-                "tipo": "",
-                "cadastrado_manual": True
-            }])
-            self.data = pd.concat([self.data, novo], ignore_index=True)
-            self.filtered_data = self.data.copy()
-            self.refresh_tree_cadastro()
-            self.refresh_table()
-            messagebox.showinfo("Cadastro", "Produto cadastrado com sucesso!")
-        except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao cadastrar: {e}")
-
-    def excluir_produto(self):
-        sel = self.tree_cadastro.selection()
-        if not sel:
-            messagebox.showinfo("Atenção", "Selecione um produto para excluir.")
-            return
-        idx = int(sel[0])
-        cod_to_del = self.data.loc[idx, 'cod']
-        self.data = self.data[self.data['cod'] != cod_to_del].copy()
-        self.filtered_data = self.data.copy()
-        self.refresh_tree_cadastro()
-        self.refresh_table()
-        messagebox.showinfo("Exclusão", "Produto removido com sucesso.")
+        if st.button("Cadastrar", key="btn_cadastrar"):
+            try:
+                cod_int = int(float(new_cod)) if new_cod else None
+                pv_calc = new_pv if new_pv > 0 else new_preco * new_fat
+                # idx único baseado no maior existente
+                idx_next = 0
+                if "idx" in df.columns and not df["idx"].isna().all():
+                    try:
+                        idx_next = int(pd.to_numeric(df["idx"], errors="coerce").max()) + 1
+                    except Exception:
+                        idx_next = len(df) + 1
+                novo = {
+                    "idx": idx_next,
+                    "cod": cod_int if cod_int is not None else "",
+                    "descricao": new_desc,
+                    "preco_base": float(new_preco),
+                    "fator": float(new_fat),
+                    "preco_de_venda": float(pv_calc),
+                    "pais": new_pais,
+                    "regiao": new_regiao,
+                    "tipo": "",
+                }
+                st.session_state.cadastrados.append(novo)
+                st.success("Produto cadastrado na sessão atual. Ele já aparece na grade após o recarregamento.")
+                st.experimental_rerun()
+            except Exception as e:
+                st.error(f"Erro ao cadastrar: {e}")
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = WineMenuApp(root)
-    root.mainloop()
+    main()
