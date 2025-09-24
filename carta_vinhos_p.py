@@ -2,15 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v3_persist2.py
+app_streamlit_final_v3_persist2.py (versão AgGrid)
 
 Novidades:
 - "Sugestões Salvas": ao selecionar uma sugestão, ela é CARREGADA automaticamente,
   a relação de itens aparece abaixo e você pode incluir novos itens e salvar MESCLANDO.
 - "Preço de venda" agora é garantido: preco_de_venda = preco_base * fator
   com parsing robusto (vírgula decimal) e fator zerado/NaN substituído pelo fator global.
-- Coluna "Selecionado" corrigida (Solução 2 com session_state):
-  clique é imediato, sem lentidão ou desmarcar outro item.
+- Substituído st.data_editor por st-aggrid → seleção via checkboxes dentro da grid,
+  muito mais rápido e estável para muitos itens.
 """
 
 import os
@@ -30,6 +30,9 @@ from reportlab.lib.utils import ImageReader
 import openpyxl
 from openpyxl.styles import Font, Alignment
 from openpyxl.drawing.image import Image as XLImage
+
+# --- AgGrid ---
+from st_aggrid import AgGrid, GridOptionsBuilder
 
 # --- Constantes e diretórios ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -100,12 +103,6 @@ def get_imagem_file(cod: str):
         img_path = os.path.join(IMAGEM_DIR, f"{cod}{ext}")
         if os.path.exists(img_path):
             return os.path.abspath(img_path)
-    try:
-        for fname in os.listdir(IMAGEM_DIR):
-            if fname.startswith(str(cod)):
-                return os.path.abspath(os.path.join(IMAGEM_DIR, fname))
-    except Exception:
-        pass
     return None
 
 def atualiza_coluna_preco_base(df: pd.DataFrame, flag: str, fator_global: float):
@@ -145,8 +142,6 @@ def main():
 
     if "selected_idxs" not in st.session_state:
         st.session_state.selected_idxs = set()
-    if "selecionados" not in st.session_state:
-        st.session_state.selecionados = {}
 
     st.markdown("### Sugestão de Carta de Vinhos")
 
@@ -154,52 +149,31 @@ def main():
     df = ler_excel_vinhos(caminho_planilha)
     df = atualiza_coluna_preco_base(df, "preco1", fator_global=2.0)
 
-    # === Grade com seleção ===
+    # === Grade com seleção (AGGRID) ===
     view_df = df.copy()
     view_df["idx"] = pd.to_numeric(view_df["idx"], errors="coerce").fillna(-1).astype(int)
     view_df["cod"] = view_df.get("cod", "").astype(str)
 
-    # Preenche coluna Selecionado com estado salvo
-    view_df["Selecionado"] = view_df["idx"].apply(
-        lambda i: st.session_state.selecionados.get(i, False)
+    gb = GridOptionsBuilder.from_dataframe(
+        view_df[["cod","descricao","pais","regiao","preco_base","preco_de_venda","fator","idx"]]
     )
-    view_df["foto"] = view_df["cod"].apply(
-        lambda c: "●" if get_imagem_file(str(c)) else ""
-    )
+    gb.configure_selection("multiple", use_checkbox=True)
+    gb.configure_column("preco_base", type=["numericColumn"], precision=2)
+    gb.configure_column("preco_de_venda", type=["numericColumn"], precision=2)
+    gb.configure_column("fator", type=["numericColumn"], precision=2)
+    gridOptions = gb.build()
 
-    edited = st.data_editor(
-        view_df[["Selecionado","foto","cod","descricao","pais","regiao",
-                 "preco_base","preco_de_venda","fator","idx"]],
-        hide_index=True,
-        column_config={
-            "Selecionado": st.column_config.CheckboxColumn("SELECIONADO"),
-            "foto": st.column_config.TextColumn("FOTO"),
-            "cod": st.column_config.TextColumn("COD"),
-            "descricao": st.column_config.TextColumn("DESCRICAO"),
-            "pais": st.column_config.TextColumn("PAIS"),
-            "regiao": st.column_config.TextColumn("REGIAO"),
-            "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f"),
-            "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f"),
-            "fator": st.column_config.NumberColumn("FATOR", format="%.2f"),
-            "idx": st.column_config.NumberColumn("IDX"),
-        },
-        use_container_width=True,
-        num_rows="dynamic",
-        key="editor_main",
+    grid_response = AgGrid(
+        view_df,
+        gridOptions=gridOptions,
+        update_mode="SELECTION_CHANGED",
+        fit_columns_on_grid_load=True,
+        height=500,
+        reload_data=True
     )
 
-    # Atualiza session_state a cada clique
-    if isinstance(edited, pd.DataFrame) and not edited.empty:
-        for _, row in edited.iterrows():
-            try:
-                idx = int(row["idx"])
-            except Exception:
-                continue
-            st.session_state.selecionados[idx] = bool(row.get("Selecionado", False))
-
-    st.session_state.selected_idxs = {
-        i for i, marcado in st.session_state.selecionados.items() if marcado
-    }
+    selecionados = grid_response["selected_rows"]
+    st.session_state.selected_idxs = set([int(r["idx"]) for r in selecionados])
 
     st.write("Selecionados:", st.session_state.selected_idxs)
 
