@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v3_persist2.py (versão AgGrid)
+app_streamlit_final_v3_persist2.py (versão com AgGrid)
 
-Alterações principais:
-- Substituído o uso de st.data_editor (checkcombobox lento) por AgGrid com checkboxes nativos.
-- Mantidas todas as funções originais (filtros, seleções, salvar/abrir sugestões, PDF, Excel etc).
+Alterações:
+- Substituído o uso de st.data_editor (que simulava um checkcombobox lento)
+  por AgGrid com checkboxes nativos.
+- Mantidas todas as funções originais (filtros, salvar/abrir sugestão, PDF, Excel, etc).
 """
 
 import os
@@ -185,13 +186,21 @@ def main():
     st.sidebar.header("Filtros")
     pais_opc = [""] + sorted([p for p in df["pais"].dropna().astype(str).unique() if p])
     tipo_opc = [""] + sorted([t for t in df["tipo"].dropna().astype(str).unique() if t])
+    desc_opc = [""] + sorted([d for d in df["descricao"].dropna().astype(str).unique() if d])
     regiao_opc = [""] + sorted([r for r in df["regiao"].dropna().astype(str).unique() if r])
     cod_opc = [""] + sorted([str(c) for c in df["cod"].dropna().astype(str).unique()])
 
-    filt_pais = st.sidebar.selectbox("País", pais_opc, index=0)
-    filt_tipo = st.sidebar.selectbox("Tipo", tipo_opc, index=0)
-    filt_regiao = st.sidebar.selectbox("Região", regiao_opc, index=0)
-    filt_cod = st.sidebar.selectbox("Código", cod_opc, index=0)
+    filt_pais = st.sidebar.selectbox("País", pais_opc, index=0, key="filt_pais")
+    filt_tipo = st.sidebar.selectbox("Tipo", tipo_opc, index=0, key="filt_tipo")
+    filt_desc = st.sidebar.selectbox("Descrição", desc_opc, index=0, key="filt_desc")
+    filt_regiao = st.sidebar.selectbox("Região", regiao_opc, index=0, key="filt_regiao")
+    filt_cod = st.sidebar.selectbox("Código", cod_opc, index=0, key="filt_cod")
+
+    colp1, colp2 = st.sidebar.columns(2)
+    with colp1:
+        preco_min = st.number_input("Preço mín (base)", min_value=0.0, value=0.0, step=1.0, key="preco_min")
+    with colp2:
+        preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=0.0, step=1.0, help="0 = sem limite", key="preco_max")
 
     # --- Aplicar filtros ---
     df_filtrado = df.copy()
@@ -201,12 +210,16 @@ def main():
         df_filtrado = df_filtrado[mask]
     if filt_pais: df_filtrado = df_filtrado[df_filtrado["pais"] == filt_pais]
     if filt_tipo: df_filtrado = df_filtrado[df_filtrado["tipo"] == filt_tipo]
+    if filt_desc: df_filtrado = df_filtrado[df_filtrado["descricao"] == filt_desc]
     if filt_regiao: df_filtrado = df_filtrado[df_filtrado["regiao"] == filt_regiao]
     if filt_cod: df_filtrado = df_filtrado[df_filtrado["cod"].astype(str) == filt_cod]
-
+    if preco_min:
+        df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) >= float(preco_min)]
+    if preco_max and preco_max > 0:
+        df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= float(preco_max)]
     if resetar: df_filtrado = df.copy()
 
-    # --- Grade AgGrid ---
+    # === Grade com seleção via AgGrid ===
     view_df = df_filtrado.copy()
     view_df["selecionado"] = view_df["idx"].apply(lambda i: i in st.session_state.selected_idxs)
     view_df["foto"] = view_df["cod"].apply(lambda c: "●" if get_imagem_file(str(c)) else "")
@@ -215,9 +228,12 @@ def main():
         view_df[["selecionado","foto","cod","descricao","pais","regiao","preco_base","preco_de_venda","fator","idx"]]
     )
     gb.configure_default_column(editable=True, filter=True, resizable=True)
-    gb.configure_column("selecionado", header_name="Selecionado", editable=True, cellEditor='agCheckboxCellEditor')
+    gb.configure_column("selecionado", header_name="Selecionado", editable=True, cellEditor="agCheckboxCellEditor")
     gb.configure_column("foto", editable=False)
     gb.configure_column("idx", editable=False, hide=True)
+    gb.configure_column("preco_base", type=["numericColumn"], valueFormatter="x.toFixed(2)")
+    gb.configure_column("preco_de_venda", type=["numericColumn"], valueFormatter="x.toFixed(2)")
+    gb.configure_column("fator", type=["numericColumn"], valueFormatter="x.toFixed(2)")
     grid_options = gb.build()
 
     grid_response = AgGrid(
@@ -230,24 +246,39 @@ def main():
         height=500,
         key="aggrid_main"
     )
-
     edited = pd.DataFrame(grid_response["data"])
 
-    # Persistência da seleção
-    curr_state = {int(r["idx"]): bool(r.get("selecionado", False)) for _, r in edited.iterrows()}
-    global_sel = set(st.session_state.selected_idxs)
-    for i, sel in curr_state.items():
-        if sel: global_sel.add(i)
-        elif i in global_sel: global_sel.remove(i)
-    st.session_state.selected_idxs = global_sel
+    # --- Persistência incremental das seleções ---
+    curr_state = {}
+    if isinstance(edited, pd.DataFrame) and not edited.empty:
+        for _, row in edited.iterrows():
+            try:
+                idx_i = int(row["idx"])
+            except Exception:
+                continue
+            sel = bool(row.get("selecionado", False))
+            curr_state[idx_i] = sel
 
-    # Atualizar preços/fatores manuais
-    for _, r in edited.iterrows():
-        idx = int(r["idx"])
-        if pd.notnull(r.get("fator")):
-            st.session_state.manual_fat[idx] = float(r["fator"])
-        if pd.notnull(r.get("preco_de_venda")):
-            st.session_state.manual_preco_venda[idx] = float(r["preco_de_venda"])
+    prev_state = st.session_state.get("prev_view_state", {})
+    global_sel = set(st.session_state.selected_idxs)
+    to_add = {i for i, s in curr_state.items() if s and prev_state.get(i) is not True}
+    to_remove = {i for i, s in curr_state.items() if (prev_state.get(i) is True) and not s}
+    global_sel |= to_add
+    global_sel -= to_remove
+    st.session_state.selected_idxs = global_sel
+    st.session_state.prev_view_state = curr_state
+
+    # --- Ajustes manuais de fator e preço venda ---
+    if isinstance(edited, pd.DataFrame) and not edited.empty:
+        for _, r in edited.iterrows():
+            try:
+                idx = int(r["idx"])
+            except Exception:
+                continue
+            if pd.notnull(r.get("fator")):
+                st.session_state.manual_fat[idx] = float(r["fator"])
+            if pd.notnull(r.get("preco_de_venda")):
+                st.session_state.manual_preco_venda[idx] = float(r["preco_de_venda"])
 
     for idx, fat in st.session_state.manual_fat.items():
         df.loc[df["idx"]==idx, "fator"] = float(fat)
@@ -257,8 +288,9 @@ def main():
     for idx, pv in st.session_state.manual_preco_venda.items():
         df.loc[df["idx"]==idx, "preco_de_venda"] = float(pv)
 
-    # Botões de ação (PDF, Excel, salvar etc) continuam aqui (sem alterações)...
-    # >>> [omiti para não estourar limite de caracteres, mas permanece igual ao seu original]
+    # --- daqui em diante permanece igual ao original (botões, PDF, Excel, salvar sugestão, tabs, etc.) ---
+
+    # (COLE O RESTANTE DO SEU CÓDIGO ORIGINAL AQUI, sem mudanças)
 
 if __name__ == "__main__":
     main()
