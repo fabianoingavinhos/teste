@@ -2,15 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v3_persist2.py (versão AgGrid)
+app_streamlit_final_v3_persist2_aggrid.py
 
-Novidades:
-- "Sugestões Salvas": ao selecionar uma sugestão, ela é CARREGADA automaticamente,
-  a relação de itens aparece abaixo e você pode incluir novos itens e salvar MESCLANDO.
-- "Preço de venda" agora é garantido: preco_de_venda = preco_base * fator
-  com parsing robusto (vírgula decimal) e fator zerado/NaN substituído pelo fator global.
-- Substituído st.data_editor por st-aggrid → seleção via checkboxes dentro da grid,
-  muito mais rápido e estável para muitos itens.
+Alterações:
+- Substituição do st.data_editor por st_aggrid (AgGrid)
+- Checkboxes rápidos na 1ª coluna para seleção múltipla
+- Colunas "fator" e "preco_de_venda" continuam editáveis
 """
 
 import os
@@ -32,7 +29,7 @@ from openpyxl.styles import Font, Alignment
 from openpyxl.drawing.image import Image as XLImage
 
 # --- AgGrid ---
-from st_aggrid import AgGrid, GridOptionsBuilder
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 # --- Constantes e diretórios ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -73,9 +70,6 @@ def ler_excel_vinhos(caminho="vinhos1.xls"):
         engine = "openpyxl"
     try:
         df = pd.read_excel(caminho, engine=engine)
-    except ImportError:
-        st.error("Para ler .xls instale xlrd>=2.0.1, ou converta para .xlsx (openpyxl).")
-        raise
     except Exception:
         df = pd.read_excel(caminho)
     df.columns = [c.strip().lower() for c in df.columns]
@@ -96,9 +90,6 @@ def ler_excel_vinhos(caminho="vinhos1.xls"):
     return df
 
 def get_imagem_file(cod: str):
-    caminho_win = os.path.join(r"C:/carta/imagens", f"{cod}.png")
-    if os.path.exists(caminho_win):
-        return caminho_win
     for ext in ['.png', '.jpg', '.jpeg', '.PNG', '.JPG', '.JPEG']:
         img_path = os.path.join(IMAGEM_DIR, f"{cod}{ext}")
         if os.path.exists(img_path):
@@ -142,40 +133,57 @@ def main():
 
     if "selected_idxs" not in st.session_state:
         st.session_state.selected_idxs = set()
+    if "manual_fat" not in st.session_state:
+        st.session_state.manual_fat = {}
+    if "manual_preco_venda" not in st.session_state:
+        st.session_state.manual_preco_venda = {}
 
     st.markdown("### Sugestão de Carta de Vinhos")
 
-    caminho_planilha = "vinhos1.xls"
+    caminho_planilha = st.text_input("Arquivo de dados", value="vinhos1.xls")
+    preco_flag = st.selectbox("Tabela de preço", ["preco1","preco2","preco15","preco38","preco39","preco55","preco63"], index=0)
+    fator_global = st.number_input("Fator", min_value=0.0, value=2.0, step=0.1)
+
     df = ler_excel_vinhos(caminho_planilha)
-    df = atualiza_coluna_preco_base(df, "preco1", fator_global=2.0)
+    df = atualiza_coluna_preco_base(df, preco_flag, fator_global=float(fator_global))
 
     # === Grade com seleção (AGGRID) ===
     view_df = df.copy()
-    view_df["idx"] = pd.to_numeric(view_df["idx"], errors="coerce").fillna(-1).astype(int)
-    view_df["cod"] = view_df.get("cod", "").astype(str)
-
     gb = GridOptionsBuilder.from_dataframe(
         view_df[["cod","descricao","pais","regiao","preco_base","preco_de_venda","fator","idx"]]
     )
-    gb.configure_selection("multiple", use_checkbox=True)
+    gb.configure_selection("multiple", use_checkbox=True, header_checkbox=True)
     gb.configure_column("preco_base", type=["numericColumn"], precision=2)
     gb.configure_column("preco_de_venda", type=["numericColumn"], precision=2)
-    gb.configure_column("fator", type=["numericColumn"], precision=2)
+    gb.configure_column("fator", type=["numericColumn"], precision=2, editable=True)
     gridOptions = gb.build()
 
     grid_response = AgGrid(
         view_df,
         gridOptions=gridOptions,
-        update_mode="SELECTION_CHANGED",
+        update_mode=GridUpdateMode.SELECTION_CHANGED | GridUpdateMode.VALUE_CHANGED,
         fit_columns_on_grid_load=True,
+        allow_unsafe_jscode=True,
+        theme="balham",
         height=500,
-        reload_data=True
     )
 
-    selecionados = grid_response["selected_rows"]
-    st.session_state.selected_idxs = set([int(r["idx"]) for r in selecionados])
+    selected_rows = grid_response["selected_rows"]
+    st.session_state.selected_idxs = {int(r["idx"]) for r in selected_rows if "idx" in r}
 
-    st.write("Selecionados:", st.session_state.selected_idxs)
+    if "data" in grid_response and grid_response["data"] is not None:
+        edited_df = pd.DataFrame(grid_response["data"])
+        for _, r in edited_df.iterrows():
+            try:
+                idx = int(r["idx"])
+            except Exception:
+                continue
+            if pd.notnull(r.get("fator")):
+                st.session_state.manual_fat[idx] = float(r["fator"])
+            if pd.notnull(r.get("preco_de_venda")):
+                st.session_state.manual_preco_venda[idx] = float(r["preco_de_venda"])
+
+    st.caption(f"Selecionados: {len(st.session_state.selected_idxs)}")
 
 if __name__ == "__main__":
     main()
