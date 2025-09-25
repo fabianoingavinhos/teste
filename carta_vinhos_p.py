@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Sugestão de Carta de Vinhos - Streamlit
-Versão otimizada com seleção rápida, usabilidade aprimorada e todas funcionalidades.
+Sugestão de Carta de Vinhos - Streamlit App
+Versão melhorada: seleção facilitada, filtros avançados, sugestões salvas, exportação PDF/Excel, cadastro de novos produtos.
 """
 
 import os
@@ -14,18 +14,15 @@ import streamlit as st
 import pandas as pd
 from PIL import Image
 
-# --- PDF (ReportLab) ---
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
-# --- Excel (openpyxl) ---
 import openpyxl
 from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
 from openpyxl.drawing.image import Image as XLImage
 
-# --- Constantes e diretórios ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMAGEM_DIR = os.path.join(BASE_DIR, "imagens")
 SUGESTOES_DIR = os.path.join(BASE_DIR, "sugestoes")
@@ -37,7 +34,6 @@ TIPO_ORDEM_FIXA = [
     "Frisantes", "Fortificados", "Vinhos de sobremesa", "Licorosos"
 ]
 
-# ===== Helpers =====
 def garantir_pastas():
     for p in (IMAGEM_DIR, SUGESTOES_DIR, CARTA_DIR):
         os.makedirs(p, exist_ok=True)
@@ -287,7 +283,6 @@ def exportar_excel_like_pdf(df, inserir_foto=True):
                 row_num += 2; ordem_geral += 1
     stream = io.BytesIO(); wb.save(stream); stream.seek(0); return stream
 
-# ===================== APP =====================
 def main():
     st.set_page_config(page_title="Sugestão de Carta de Vinhos", layout="wide")
     garantir_pastas()
@@ -379,23 +374,10 @@ def main():
         df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) >= float(preco_min)]
     if preco_max and preco_max > 0:
         df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= float(preco_max)]
-
     if resetar:
         df_filtrado = df.copy()
 
-    contagem = {'Brancos': 0, 'Tintos': 0, 'Rosés': 0, 'Espumantes': 0, 'outros': 0}
-    for t, n in df_filtrado.groupby('tipo').size().items():
-        t_low = str(t).lower()
-        if "branc" in t_low: contagem['Brancos'] += int(n)
-        elif "tint" in t_low: contagem['Tintos'] += int(n)
-        elif "ros" in t_low: contagem['Rosés'] += int(n)
-        elif "espum" in t_low: contagem['Espumantes'] += int(n)
-        else: contagem['outros'] += int(n)
-    total = len(df_filtrado)
-    selecionados = len(st.session_state.selected_idxs)
-    st.caption(f"Brancos: {contagem.get('Brancos', 0)} | Tintos: {contagem.get('Tintos', 0)} | Rosés: {contagem.get('Rosés', 0)} | Espumantes: {contagem.get('Espumantes', 0)} | Total: {total} | Selecionados: {selecionados} | Fator: {float(fator_global):.2f}")
-
-    # === Bloco de seleção rápida ===
+    # Bloco de seleção rápida
     col_sel_all, col_sel_none, col_sel_tipo = st.columns([1,1,2])
     with col_sel_all:
         if st.button("Selecionar todos filtrados"):
@@ -412,7 +394,6 @@ def main():
             st.session_state.selected_idxs |= set(tipo_idxs)
             st.experimental_rerun()
 
-    # === Grade principal com seleção por checkbox ===
     view_df = df_filtrado.copy()
     view_df["selecionado"] = view_df["idx"].apply(lambda i: i in st.session_state.selected_idxs)
     view_df["foto"] = view_df["cod"].apply(lambda c: "●" if get_imagem_file(str(c)) else "")
@@ -449,10 +430,13 @@ def main():
 
     prev_state = st.session_state.get("prev_view_state", {})
     global_sel = set(st.session_state.selected_idxs)
+
     to_add = {i for i, s in curr_state.items() if s and prev_state.get(i) is not True}
     to_remove = {i for i, s in curr_state.items() if (prev_state.get(i) is True) and not s}
+
     global_sel |= to_add
     global_sel -= to_remove
+
     st.session_state.selected_idxs = global_sel
     st.session_state.prev_view_state = curr_state
 
@@ -591,7 +575,6 @@ def main():
         garantir_pastas()
         arquivos = [f for f in os.listdir(SUGESTOES_DIR) if f.endswith(".txt")]
         sel = st.selectbox("Abrir sugestão", [""] + [a[:-4] for a in arquivos], key="sel_sugestao")
-
         sugestao_indices = []
         if sel:
             path = os.path.join(SUGESTOES_DIR, f"{sel}.txt")
@@ -663,4 +646,34 @@ def main():
         with c6b:
             new_pais = st.text_input("País", key="cad_pais")
         with c7b:
-            new_regiao = st.text_input("Região
+            new_regiao = st.text_input("Região", key="cad_regiao")
+
+        if st.button("Cadastrar", key="btn_cadastrar"):
+            try:
+                cod_int = int(float(new_cod)) if new_cod else None
+                pv_calc = new_pv if new_pv > 0 else new_preco * new_fat
+                idx_next = 0
+                if "idx" in df.columns and not df["idx"].isna().all():
+                    try:
+                        idx_next = int(pd.to_numeric(df["idx"], errors="coerce").max()) + 1
+                    except Exception:
+                        idx_next = len(df) + 1
+                novo = {
+                    "idx": idx_next,
+                    "cod": cod_int if cod_int is not None else "",
+                    "descricao": new_desc,
+                    "preco_base": float(new_preco),
+                    "fator": float(new_fat),
+                    "preco_de_venda": float(pv_calc),
+                    "pais": new_pais,
+                    "regiao": new_regiao,
+                    "tipo": "",
+                }
+                st.session_state.cadastrados.append(novo)
+                st.success("Produto cadastrado na sessão atual. Ele já aparece na grade após o recarregamento.")
+                st.experimental_rerun()
+            except Exception as e:
+                st.error(f"Erro ao cadastrar: {e}")
+
+if __name__ == "__main__":
+    main()
