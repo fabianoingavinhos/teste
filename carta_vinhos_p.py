@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v3_persist2.py (versão com AgGrid)
+app_streamlit_final_v3_persist2.py (versão com AgGrid + filtros robustos + reset/limpar seleção)
 
-Alterações:
-- Substituído o uso de st.data_editor (que simulava um checkcombobox lento)
-  por AgGrid com checkboxes nativos.
-- Mantidas todas as funções originais (filtros, salvar/abrir sugestão, PDF, Excel, etc).
+Correções implementadas:
+- Filtros (país, tipo, região, código) agora fazem comparação robusta (strip + lower) e funcionam mesmo com variações de caixa/espaços.
+- Botão "Resetar/Mostrar Todos" agora limpa: filtros, busca, preços min/máx e seleção de itens.
+- Botão "Limpar seleção" adicional ao lado da grade, além do que já existia na aba.
+- Mantidas TODAS as demais funcionalidades: sugestão salva/abre, PDF, Excel, cadastro, pré-visualização.
 """
 
 import os
@@ -26,7 +27,6 @@ from reportlab.lib.utils import ImageReader
 # --- Excel (openpyxl) ---
 import openpyxl
 from openpyxl.styles import Font, Alignment
-from openpyxl.utils import get_column_letter
 from openpyxl.drawing.image import Image as XLImage
 
 # --- AgGrid ---
@@ -48,6 +48,12 @@ TIPO_ORDEM_FIXA = [
 def garantir_pastas():
     for p in (IMAGEM_DIR, SUGESTOES_DIR, CARTA_DIR):
         os.makedirs(p, exist_ok=True)
+
+def _rerun():
+    try:
+        st.rerun()
+    except Exception:
+        st.experimental_rerun()
 
 def parse_money_series(s, default=0.0):
     """Converte série textual com possível separador de milhar '.' e decimal ',' em float."""
@@ -147,7 +153,6 @@ def ordenar_para_saida(df):
     return df2.sort_values(cols_exist).drop(columns=["__tipo_ordem"], errors="ignore")
 
 def add_pdf_footer(c, contagem, total_rotulos, fator_geral):
-    from reportlab.lib.pagesizes import A4
     width, height = A4
     y_rodape = 35
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -170,7 +175,6 @@ def add_pdf_footer(c, contagem, total_rotulos, fator_geral):
     c.drawString(width-190, y_rodape-5, "b2b.ingavinhos.com.br")
 
 def gerar_pdf(df, titulo, cliente, inserir_foto, logo_cliente_bytes=None):
-    from reportlab.lib.pagesizes import A4
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
@@ -338,11 +342,26 @@ def main():
                                       ["preco1", "preco2", "preco15", "preco38", "preco39", "preco55", "preco63"],
                                       index=0, key="preco_flag")
         with c5:
-            termo_global = st.text_input("Buscar", value="", key="termo_global")
+            termo_global = st.text_input("Buscar", value=st.session_state.get("termo_global", ""), key="termo_global")
         with c6:
-            fator_global = st.number_input("Fator", min_value=0.0, value=2.0, step=0.1, key="fator_global_input")
+            fator_global = st.number_input("Fator", min_value=0.0, value=float(st.session_state.get("fator_global_input", 2.0)), step=0.1, key="fator_global_input")
         with c7:
-            resetar = st.button("Resetar/Mostrar Todos", key="btn_resetar")
+            if st.button("Resetar/Mostrar Todos", key="btn_resetar"):
+                # Limpa filtros e seleção
+                for k, v in {
+                    "filt_pais": "",
+                    "filt_tipo": "",
+                    "filt_desc": "",
+                    "filt_regiao": "",
+                    "filt_cod": "",
+                    "termo_global": "",
+                    "preco_min": 0.0,
+                    "preco_max": 0.0,
+                }.items():
+                    st.session_state[k] = v
+                st.session_state.selected_idxs = set()
+                st.session_state.prev_view_state = {}
+                _rerun()
         with c8:
             caminho_planilha = st.text_input("Arquivo de dados", value="vinhos1.xls",
                                              help="Caminho do arquivo XLS/XLSX (ex.: vinhos1.xls)",
@@ -350,7 +369,7 @@ def main():
 
     # Carrega DF base
     df = ler_excel_vinhos(caminho_planilha)
-    df = atualiza_coluna_preco_base(df, preco_flag, fator_global=float(fator_global))
+    df = atualiza_coluna_preco_base(df, preco_flag, fator_global=float(st.session_state["fator_global_input"]))
 
     # Integra itens cadastrados (sessão)
     if st.session_state.cadastrados:
@@ -377,33 +396,41 @@ def main():
 
     colp1, colp2 = st.sidebar.columns(2)
     with colp1:
-        preco_min = st.number_input("Preço mín (base)", min_value=0.0, value=0.0, step=1.0, key="preco_min")
+        preco_min = st.number_input("Preço mín (base)", min_value=0.0, value=float(st.session_state.get("preco_min", 0.0)), step=1.0, key="preco_min")
     with colp2:
-        preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=0.0, step=1.0, help="0 = sem limite", key="preco_max")
+        preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=float(st.session_state.get("preco_max", 0.0)), step=1.0, help="0 = sem limite", key="preco_max")
 
-    # Aplicar filtros (VIEW)
+    # ======== Aplicar filtros (robustos) ========
+    def _eq(df_series, needle):
+        """Comparação robusta: strip + lower nos dois lados."""
+        if needle is None or str(needle).strip() == "":
+            return pd.Series([True] * len(df_series))
+        a = df_series.fillna("").astype(str).str.strip().str.lower()
+        b = str(needle).strip().lower()
+        return a == b
+
     df_filtrado = df.copy()
-    if termo_global.strip():
-        term = termo_global.strip().lower()
+
+    # Busca global
+    term = str(st.session_state.get("termo_global", "")).strip().lower()
+    if term:
         mask = df_filtrado.apply(lambda row: term in " ".join(str(v).lower() for v in row.values), axis=1)
         df_filtrado = df_filtrado[mask]
-    if filt_pais:
-        df_filtrado = df_filtrado[df_filtrado["pais"] == filt_pais]
-    if filt_tipo:
-        df_filtrado = df_filtrado[df_filtrado["tipo"] == filt_tipo]
-    if filt_desc:
-        df_filtrado = df_filtrado[df_filtrado["descricao"] == filt_desc]
-    if filt_regiao:
-        df_filtrado = df_filtrado[df_filtrado["regiao"] == filt_regiao]
-    if filt_cod:
-        df_filtrado = df_filtrado[df_filtrado["cod"].astype(str) == filt_cod]
-    if preco_min:
-        df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) >= float(preco_min)]
-    if preco_max and preco_max > 0:
-        df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= float(preco_max)]
 
-    if resetar:
-        df_filtrado = df.copy()
+    # Filtros robustos
+    if filt_pais:   df_filtrado = df_filtrado[_eq(df_filtrado["pais"],   filt_pais)]
+    if filt_tipo:   df_filtrado = df_filtrado[_eq(df_filtrado["tipo"],   filt_tipo)]
+    if filt_desc:   df_filtrado = df_filtrado[_eq(df_filtrado["descricao"], filt_desc)]
+    if filt_regiao: df_filtrado = df_filtrado[_eq(df_filtrado["regiao"], filt_regiao)]
+    if filt_cod:    df_filtrado = df_filtrado[_eq(df_filtrado["cod"].astype(str), filt_cod)]
+
+    # Faixa de preço base
+    if st.session_state.get("preco_min", 0.0):
+        df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) >= float(st.session_state["preco_min"])]
+    if st.session_state.get("preco_max", 0.0):
+        pmx = float(st.session_state["preco_max"])
+        if pmx > 0:
+            df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= pmx]
 
     # Contagem por tipo + status seleção
     contagem = {'Brancos': 0, 'Tintos': 0, 'Rosés': 0, 'Espumantes': 0, 'outros': 0}
@@ -416,7 +443,21 @@ def main():
         else: contagem['outros'] += int(n)
     total = len(df_filtrado)
     selecionados = len(st.session_state.selected_idxs)
-    st.caption(f"Brancos: {contagem.get('Brancos', 0)} | Tintos: {contagem.get('Tintos', 0)} | Rosés: {contagem.get('Rosés', 0)} | Espumantes: {contagem.get('Espumantes', 0)} | Total: {total} | Selecionados: {selecionados} | Fator: {float(fator_global):.2f}")
+    st.caption(
+        f"Brancos: {contagem.get('Brancos', 0)} | Tintos: {contagem.get('Tintos', 0)} | "
+        f"Rosés: {contagem.get('Rosés', 0)} | Espumantes: {contagem.get('Espumantes', 0)} | "
+        f"Total: {total} | Selecionados: {selecionados} | Fator: {float(st.session_state['fator_global_input']):.2f}"
+    )
+
+    # === Ações rápidas acima da grade ===
+    ac1, ac2 = st.columns([1, 1])
+    with ac1:
+        if st.button("Limpar seleção", key="btn_limpar_selecao_top"):
+            st.session_state.selected_idxs = set()
+            st.session_state.prev_view_state = {}
+            _rerun()
+    with ac2:
+        st.write("")  # espaçamento
 
     # === Grade com seleção via AgGrid ===
     view_df = df_filtrado.copy()
@@ -466,7 +507,6 @@ def main():
     gb.configure_column("preco_de_venda", header_name="PRECO_VENDA", type=["numericColumn"], valueFormatter="x != null ? `R$ ${Number(x).toFixed(2)}` : ''", width=130)
     gb.configure_column("fator", header_name="FATOR", type=["numericColumn"], valueFormatter="x != null ? Number(x).toFixed(2) : ''", width=100)
     gb.configure_column("idx", editable=False, hide=True)
-
     gb.configure_grid_options(stopEditingWhenCellsLoseFocus=True, rowSelection="single")
     grid_options = gb.build()
 
@@ -482,7 +522,7 @@ def main():
         key="aggrid_main"
     )
 
-    edited = pd.DataFrame(grid_response["data"])
+    edited = pd.DataFrame(grid_response["data"]) if grid_response and "data" in grid_response else view_df[ag_columns].copy()
 
     # --- Persistência incremental das seleções ---
     curr_state = {}
@@ -522,8 +562,8 @@ def main():
     for idx, fat in st.session_state.manual_fat.items():
         df.loc[df["idx"]==idx, "fator"] = float(fat)
     # caso fator <=0, usa fator_global
-    df["fator"] = to_float_series(df["fator"], default=float(fator_global))
-    df["fator"] = df["fator"].apply(lambda x: float(fator_global) if pd.isna(x) or x <= 0 else float(x))
+    df["fator"] = to_float_series(df["fator"], default=float(st.session_state["fator_global_input"]))
+    df["fator"] = df["fator"].apply(lambda x: float(st.session_state["fator_global_input"]) if pd.isna(x) or x <= 0 else float(x))
 
     df["preco_base"] = to_float_series(df["preco_base"], default=0.0)
     df["preco_de_venda"] = (df["preco_base"].astype(float) * df["fator"].astype(float)).astype(float)
@@ -680,7 +720,7 @@ def main():
                     try:
                         os.remove(os.path.join(SUGESTOES_DIR, f"{sel}.txt"))
                         st.success(f"Sugestão '{sel}' excluída.")
-                        st.experimental_rerun()
+                        _rerun()
                     except Exception as e:
                         st.error(f"Erro ao excluir: {e}")
                 else:
@@ -703,9 +743,10 @@ def main():
                 else:
                     st.info("Selecione uma sugestão na lista.")
         with colz:
-            if st.button("Limpar seleção atual", key="btn_limpar_sel"):
+            if st.button("Limpar seleção atual (aba)", key="btn_limpar_sel"):
                 st.session_state.selected_idxs = set()
-                st.experimental_rerun()
+                st.session_state.prev_view_state = {}
+                _rerun()
 
     with tab2:
         st.caption("Cadastrar novo produto (entra apenas na sessão atual; salve no seu Excel depois, se quiser persistir).")
@@ -717,7 +758,7 @@ def main():
         with c3b:
             new_preco = st.number_input("Preço", min_value=0.0, value=0.0, step=0.01, key="cad_preco")
         with c4b:
-            new_fat = st.number_input("Fator", min_value=0.0, value=float(fator_global), step=0.1, key="cad_fator")
+            new_fat = st.number_input("Fator", min_value=0.0, value=float(st.session_state["fator_global_input"]), step=0.1, key="cad_fator")
         with c5b:
             new_pv = st.number_input("Preço Venda", min_value=0.0, value=0.0, step=0.01, key="cad_pv")
         with c6b:
@@ -749,7 +790,7 @@ def main():
                 }
                 st.session_state.cadastrados.append(novo)
                 st.success("Produto cadastrado na sessão atual. Ele já aparece na grade após o recarregamento.")
-                st.experimental_rerun()
+                _rerun()
             except Exception as e:
                 st.error(f"Erro ao cadastrar: {e}")
 
