@@ -4,6 +4,7 @@
 """
 Sugestão de Carta de Vinhos - Streamlit App
 Versão melhorada: seleção facilitada, filtros avançados, sugestões salvas, exportação PDF/Excel, cadastro de novos produtos.
+Compatível com Streamlit >=1.22.0 (usa st.rerun ao invés de st.experimental_rerun)
 """
 
 import os
@@ -382,17 +383,17 @@ def main():
     with col_sel_all:
         if st.button("Selecionar todos filtrados"):
             st.session_state.selected_idxs = set(df_filtrado["idx"].tolist())
-            st.experimental_rerun()
+            st.rerun()
     with col_sel_none:
         if st.button("Limpar seleção"):
             st.session_state.selected_idxs = set()
-            st.experimental_rerun()
+            st.rerun()
     with col_sel_tipo:
         tipo_select = st.selectbox("Selecionar todos por tipo", [""] + sorted(df_filtrado["tipo"].dropna().unique()), key="sel_tipo")
         if tipo_select and st.button("Selecionar tipo"):
             tipo_idxs = df_filtrado[df_filtrado["tipo"] == tipo_select]["idx"]
             st.session_state.selected_idxs |= set(tipo_idxs)
-            st.experimental_rerun()
+            st.rerun()
 
     view_df = df_filtrado.copy()
     view_df["selecionado"] = view_df["idx"].apply(lambda i: i in st.session_state.selected_idxs)
@@ -603,7 +604,7 @@ def main():
                     try:
                         os.remove(os.path.join(SUGESTOES_DIR, f"{sel}.txt"))
                         st.success(f"Sugestão '{sel}' excluída.")
-                        st.experimental_rerun()
+                        st.rerun()
                     except Exception as e:
                         st.error(f"Erro ao excluir: {e}")
                 else:
@@ -621,6 +622,7 @@ def main():
                         with open(path, "w") as f:
                             f.write(",".join(map(str, sorted(list(new_set)))))
                         st.success(f"Sugestão '{sel}' atualizada (itens mesclados).")
+                        st.rerun()
                     except Exception as e:
                         st.error(f"Erro ao salvar: {e}")
                 else:
@@ -628,7 +630,7 @@ def main():
         with colz:
             if st.button("Limpar seleção atual", key="btn_limpar_sel"):
                 st.session_state.selected_idxs = set()
-                st.experimental_rerun()
+                st.rerun()
 
     with tab2:
         st.caption("Cadastrar novo produto (entra apenas na sessão atual; salve no seu Excel depois, se quiser persistir).")
@@ -671,7 +673,7 @@ def main():
                 }
                 st.session_state.cadastrados.append(novo)
                 st.success("Produto cadastrado na sessão atual. Ele já aparece na grade após o recarregamento.")
-                st.experimental_rerun()
+                st.rerun()
             except Exception as e:
                 st.error(f"Erro ao cadastrar: {e}")
 
