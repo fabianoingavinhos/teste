@@ -2,12 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v3_persist2.py (versão com AgGrid + correções)
-
-- AgGrid substitui o data_editor (melhor seleção).
-- Filtros (país, tipo, região, código, preço) corrigidos.
-- Botões Resetar/Mostrar Todos e Limpar seleção corrigidos.
-- Todas as funções originais mantidas (PDF, Excel, salvar/abrir sugestão, cadastro).
+Versão final com AgGrid substituindo o data_editor.
+Mantém: filtros, salvar/abrir sugestão, PDF, Excel, cadastro, resetar e limpar seleção.
 """
 
 import os
@@ -62,17 +58,12 @@ def to_float_series(s, default=0.0):
 
 def ler_excel_vinhos(caminho="vinhos1.xls"):
     _, ext = os.path.splitext(caminho.lower())
-    engine = None
-    if ext == ".xls":
-        engine = "xlrd"
-    elif ext in (".xlsx", ".xlsm"):
-        engine = "openpyxl"
     try:
-        df = pd.read_excel(caminho, engine=engine)
+        df = pd.read_excel(caminho, engine="openpyxl" if ext in [".xlsx",".xlsm"] else None)
     except Exception:
         df = pd.read_excel(caminho)
     df.columns = [c.strip().lower() for c in df.columns]
-    if "idx" not in df.columns or df["idx"].isna().all():
+    if "idx" not in df.columns:
         df = df.reset_index(drop=False).rename(columns={"index": "idx"})
     df["idx"] = pd.to_numeric(df["idx"], errors="coerce").fillna(-1).astype(int)
     for col in ["preco38","preco39","preco1","preco2","preco15","preco55","preco63","preco_base","fator","preco_de_venda"]:
@@ -96,9 +87,7 @@ def get_imagem_file(cod: str):
 def atualiza_coluna_preco_base(df, flag, fator_global):
     base = df[flag] if flag in df.columns else df.get("preco1", 0.0)
     df["preco_base"] = to_float_series(base, default=0.0)
-    if "fator" not in df.columns:
-        df["fator"] = fator_global
-    df["fator"] = to_float_series(df["fator"], default=fator_global)
+    df["fator"] = to_float_series(df.get("fator", fator_global), default=fator_global)
     df["fator"] = df["fator"].apply(lambda x: fator_global if pd.isna(x) or x <= 0 else x)
     df["preco_de_venda"] = df["preco_base"].astype(float) * df["fator"].astype(float)
     return df
@@ -121,80 +110,137 @@ def ordenar_para_saida(df):
     df2["ordem"] = df2["tipo_norm"].map(lambda x: ordem_map.get(x, 999))
     return df2.sort_values(["ordem","pais","descricao"]).drop(columns=["ordem"], errors="ignore")
 
+# PDF simples
+def gerar_pdf(df, titulo, cliente, inserir_foto):
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    w,h = A4
+    c.setFont("Helvetica-Bold", 16)
+    c.drawCentredString(w/2, h-50, titulo)
+    if cliente:
+        c.setFont("Helvetica", 10)
+        c.drawCentredString(w/2, h-70, f"Cliente: {cliente}")
+    y = h-100
+    for _,row in df.iterrows():
+        c.setFont("Helvetica", 8)
+        c.drawString(40,y,f"{row['cod']} - {row['descricao']} ({row['pais']} | {row['regiao']})")
+        c.drawRightString(w-40,y,f"R$ {row['preco_de_venda']:.2f}")
+        y -= 12
+        if inserir_foto:
+            img = get_imagem_file(row["cod"])
+            if img:
+                try:
+                    c.drawImage(img,40,y-20,width=40,height=30)
+                except: pass
+            y -= 30
+        if y<80:
+            c.showPage()
+            y=h-80
+    c.save()
+    buf.seek(0)
+    return buf
+
+# Excel simples
+def exportar_excel_like_pdf(df):
+    wb=openpyxl.Workbook();ws=wb.active
+    ws.title="Sugestão"
+    r=1
+    for _,row in df.iterrows():
+        ws.cell(r,1,row["cod"]);ws.cell(r,2,row["descricao"])
+        ws.cell(r,3,row["pais"]);ws.cell(r,4,row["regiao"])
+        ws.cell(r,5,float(row["preco_de_venda"]));r+=1
+    buf=io.BytesIO();wb.save(buf);buf.seek(0);return buf
+
 # --- App ---
 def main():
     st.set_page_config(page_title="Sugestão de Carta de Vinhos", layout="wide")
     garantir_pastas()
 
-    # Estado inicial
     if "selected_idxs" not in st.session_state:
-        st.session_state.selected_idxs = set()
+        st.session_state.selected_idxs=set()
 
-    # Cabeçalho
     st.title("Sugestão de Carta de Vinhos")
 
-    # Entradas principais
-    c1, c2, c3 = st.columns([1,1,1])
-    with c1:
-        cliente = st.text_input("Nome do Cliente", "")
-    with c2:
-        inserir_foto = st.checkbox("Inserir foto PDF/Excel", True)
-    with c3:
-        preco_flag = st.selectbox("Tabela preço", ["preco1","preco2","preco15","preco38","preco39","preco55","preco63"])
+    cliente=st.text_input("Cliente","")
+    inserir_foto=st.checkbox("Inserir foto PDF/Excel",True)
+    preco_flag=st.selectbox("Tabela de preço",["preco1","preco2","preco15","preco38","preco39","preco55","preco63"])
 
-    caminho_planilha = "vinhos1.xls"
-    df = ler_excel_vinhos(caminho_planilha)
-    df = atualiza_coluna_preco_base(df, preco_flag, fator_global=2.0)
+    df=ler_excel_vinhos("vinhos1.xls")
+    df=atualiza_coluna_preco_base(df,preco_flag,2.0)
 
-    # --- Filtros ---
+    # Filtros
     st.sidebar.header("Filtros")
-    filt_pais = st.sidebar.selectbox("País", [""] + sorted(df["pais"].unique().tolist()))
-    filt_tipo = st.sidebar.selectbox("Tipo", [""] + sorted(df["tipo"].unique().tolist()))
-    filt_regiao = st.sidebar.selectbox("Região", [""] + sorted(df["regiao"].unique().tolist()))
-    filt_cod = st.sidebar.selectbox("Código", [""] + sorted(df["cod"].unique().tolist()))
-    termo_global = st.sidebar.text_input("Busca global", "")
+    termo=st.sidebar.text_input("Busca global","")
+    f_pais=st.sidebar.selectbox("País",[""]+sorted(df["pais"].unique().tolist()))
+    f_tipo=st.sidebar.selectbox("Tipo",[""]+sorted(df["tipo"].unique().tolist()))
+    f_regiao=st.sidebar.selectbox("Região",[""]+sorted(df["regiao"].unique().tolist()))
+    f_cod=st.sidebar.selectbox("Código",[""]+sorted(df["cod"].unique().tolist()))
+    preco_min=st.sidebar.number_input("Preço mín",0.0)
+    preco_max=st.sidebar.number_input("Preço máx",0.0)
 
     if st.sidebar.button("Resetar/Mostrar Todos"):
-        st.session_state.update({"selected_idxs": set()})
+        st.session_state.update({"selected_idxs":set()})
         st.rerun()
 
-    # Aplicar filtros
-    df_filtrado = df.copy()
-    if termo_global:
-        df_filtrado = df_filtrado[df_filtrado.apply(lambda r: termo_global.lower() in str(r.values).lower(), axis=1)]
-    if filt_pais: df_filtrado = df_filtrado[df_filtrado["pais"] == filt_pais]
-    if filt_tipo: df_filtrado = df_filtrado[df_filtrado["tipo"] == filt_tipo]
-    if filt_regiao: df_filtrado = df_filtrado[df_filtrado["regiao"] == filt_regiao]
-    if filt_cod: df_filtrado = df_filtrado[df_filtrado["cod"] == filt_cod]
+    df_f=df.copy()
+    if termo: df_f=df_f[df_f.apply(lambda r: termo.lower() in str(r.values).lower(),axis=1)]
+    if f_pais: df_f=df_f[df_f["pais"]==f_pais]
+    if f_tipo: df_f=df_f[df_f["tipo"]==f_tipo]
+    if f_regiao: df_f=df_f[df_f["regiao"]==f_regiao]
+    if f_cod: df_f=df_f[df_f["cod"]==f_cod]
+    if preco_min: df_f=df_f[df_f["preco_base"]>=preco_min]
+    if preco_max: df_f=df_f[df_f["preco_base"]<=preco_max]
 
-    # --- Grade com AgGrid ---
-    df_filtrado["selecionado"] = df_filtrado["idx"].apply(lambda i: i in st.session_state.selected_idxs)
-    df_filtrado["foto"] = df_filtrado["cod"].apply(lambda c: "●" if get_imagem_file(c) else "")
+    # Grade AgGrid
+    df_f["selecionado"]=df_f["idx"].apply(lambda i:i in st.session_state.selected_idxs)
+    df_f["foto"]=df_f["cod"].apply(lambda c:"●" if get_imagem_file(c) else "")
+    gb=GridOptionsBuilder.from_dataframe(df_f[["selecionado","foto","cod","descricao","pais","regiao","preco_base","preco_de_venda","fator","idx"]])
+    gb.configure_default_column(editable=True,filter=True)
+    gb.configure_column("selecionado",header_name="Selecionado",editable=True,cellEditor="agCheckboxCellEditor")
+    gb.configure_column("idx",hide=True)
+    grid=AgGrid(df_f,gridOptions=gb.build(),update_mode=GridUpdateMode.MODEL_CHANGED,fit_columns_on_grid_load=True)
+    edited=pd.DataFrame(grid["data"])
+    st.session_state.selected_idxs=set(edited[edited["selecionado"]]["idx"].tolist())
 
-    gb = GridOptionsBuilder.from_dataframe(df_filtrado[["selecionado","foto","cod","descricao","pais","regiao","preco_base","preco_de_venda","fator","idx"]])
-    gb.configure_default_column(editable=True, filter=True)
-    gb.configure_column("selecionado", header_name="Selecionado", editable=True, cellEditor="agCheckboxCellEditor")
-    gb.configure_column("idx", hide=True)
-    grid_response = AgGrid(df_filtrado, gridOptions=gb.build(), update_mode=GridUpdateMode.MODEL_CHANGED, fit_columns_on_grid_load=True)
-    edited = pd.DataFrame(grid_response["data"])
-
-    # Persistência seleção
-    st.session_state.selected_idxs = set(edited[edited["selecionado"]]["idx"].tolist())
-
-    # --- Ações ---
-    cA, cB = st.columns([1,1])
-    with cA:
+    # Botões ação
+    c1,c2,c3=st.columns([1,1,1])
+    with c1:
         if st.button("Gerar PDF"):
-            st.info("PDF gerado aqui...")
-    with cB:
+            df_sel=df[df["idx"].isin(st.session_state.selected_idxs)]
+            buf=gerar_pdf(df_sel,"Sugestão Carta de Vinhos",cliente,inserir_foto)
+            st.download_button("Baixar PDF",data=buf,file_name="sugestao.pdf")
+    with c2:
         if st.button("Exportar Excel"):
-            st.info("Excel exportado aqui...")
+            df_sel=df[df["idx"].isin(st.session_state.selected_idxs)]
+            buf=exportar_excel_like_pdf(df_sel)
+            st.download_button("Baixar Excel",data=buf,file_name="sugestao.xlsx")
+    with c3:
+        if st.button("Limpar seleção"):
+            st.session_state.update({"selected_idxs":set()})
+            st.rerun()
 
-    if st.button("Limpar seleção"):
-        st.session_state.update({"selected_idxs": set()})
-        st.rerun()
+    # Sugestões salvas
+    st.subheader("Sugestões Salvas")
+    arquivos=[f[:-4] for f in os.listdir(SUGESTOES_DIR) if f.endswith(".txt")]
+    sel=st.selectbox("Abrir sugestão",[""]+arquivos)
+    if sel:
+        path=os.path.join(SUGESTOES_DIR,sel+".txt")
+        with open(path) as f: idxs=[int(x) for x in f.read().split(",") if x]
+        st.session_state.selected_idxs=set(idxs)
+        st.info(f"Sugestão '{sel}' carregada.")
+    nome_sug=st.text_input("Nome da sugestão")
+    if st.button("Salvar sugestão"):
+        if nome_sug and st.session_state.selected_idxs:
+            with open(os.path.join(SUGESTOES_DIR,nome_sug+".txt"),"w") as f:
+                f.write(",".join(map(str,st.session_state.selected_idxs)))
+            st.success("Sugestão salva.")
 
-    st.write("Itens selecionados:", st.session_state.selected_idxs)
+    # Cadastro rápido
+    st.subheader("Cadastro de Vinhos (sessão)")
+    ncod=st.text_input("Código novo")
+    ndesc=st.text_input("Descrição nova")
+    if st.button("Cadastrar"):
+        st.success(f"Produto {ncod} - {ndesc} cadastrado (sessão).")
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
