@@ -21,7 +21,6 @@ from reportlab.lib.utils import ImageReader
 
 import openpyxl
 from openpyxl.styles import Font, Alignment
-from openpyxl.utils import get_column_letter
 from openpyxl.drawing.image import Image as XLImage
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -302,29 +301,35 @@ def main():
 
     st.markdown("### Sugestão de Carta de Vinhos")
 
-    with st.container():
-        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.4,1.2,1,1,1.6,0.9,1.2,1.6])
-        with c1:
-            cliente = st.text_input("Nome do Cliente", value="", placeholder="(opcional)", key="cliente_nome")
-        with c2:
-            logo_cliente = st.file_uploader("Carregar logo (cliente)", type=["png","jpg","jpeg"], key="logo_cliente")
-            logo_bytes = logo_cliente.read() if logo_cliente else None
-        with c3:
-            inserir_foto = st.checkbox("Inserir foto no PDF/Excel", value=True, key="chk_foto")
-        with c4:
-            preco_flag = st.selectbox("Tabela de preço",
-                                      ["preco1", "preco2", "preco15", "preco38", "preco39", "preco55", "preco63"],
-                                      index=0, key="preco_flag")
-        with c5:
-            termo_global = st.text_input("Buscar", value="", key="termo_global")
-        with c6:
-            fator_global = st.number_input("Fator", min_value=0.0, value=2.0, step=0.1, key="fator_global_input")
-        with c7:
-            resetar = st.button("Resetar/Mostrar Todos", key="btn_resetar")
-        with c8:
-            caminho_planilha = st.text_input("Arquivo de dados", value="vinhos1.xls",
-                                             help="Caminho do arquivo XLS/XLSX (ex.: vinhos1.xls)",
-                                             key="caminho_planilha")
+    # Ajuste: campo logo pequeno e drag-and-drop
+    c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.4, 0.9, 1, 1, 1.6, 0.9, 1.2, 1.6])  # c2 = 0.9 igual ao Fator
+    with c1:
+        cliente = st.text_input("Nome do Cliente", value="", placeholder="(opcional)", key="cliente_nome")
+    with c2:
+        st.caption("Logo do cliente (drag and drop file here)")
+        logo_cliente = st.file_uploader(
+            "",
+            type=["png", "jpg", "jpeg"],
+            key="logo_cliente",
+            label_visibility="collapsed"
+        )
+        logo_bytes = logo_cliente.read() if logo_cliente else None
+    with c3:
+        inserir_foto = st.checkbox("Inserir foto no PDF/Excel", value=True, key="chk_foto")
+    with c4:
+        preco_flag = st.selectbox("Tabela de preço",
+                                  ["preco1", "preco2", "preco15", "preco38", "preco39", "preco55", "preco63"],
+                                  index=0, key="preco_flag")
+    with c5:
+        termo_global = st.text_input("Buscar", value="", key="termo_global")
+    with c6:
+        fator_global = st.number_input("Fator", min_value=0.0, value=2.0, step=0.1, key="fator_global_input")
+    with c7:
+        resetar = st.button("Resetar/Mostrar Todos", key="btn_resetar")
+    with c8:
+        caminho_planilha = st.text_input("Arquivo de dados", value="vinhos1.xls",
+                                         help="Caminho do arquivo XLS/XLSX (ex.: vinhos1.xls)",
+                                         key="caminho_planilha")
 
     df = ler_excel_vinhos(caminho_planilha)
     df = atualiza_coluna_preco_base(df, preco_flag, fator_global=float(fator_global))
