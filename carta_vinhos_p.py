@@ -1,7 +1,3 @@
-Cod fabiano 
-
-
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -313,6 +309,22 @@ def main():
     st.set_page_config(page_title="Sugestão de Carta de Vinhos", layout="wide")
     garantir_pastas()
 
+    # CSS leve para compactar o uploader e manter na mesma linha
+    st.markdown("""
+    <style>
+    /* Esconde o label interno do uploader (vamos mostrar um rótulo curto manual) */
+    [data-testid="stFileUploader"] > label { display: none; }
+    /* Deixa a área do drop compacta e com pouco padding */
+    [data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] {
+        min-height: 36px; padding: 0.25rem 0.5rem;
+    }
+    /* Remove espaçamentos internos extras */
+    [data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] div {
+        padding: 0 !important; margin: 0 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     # Estado
     if "selected_idxs" not in st.session_state:
         st.session_state.selected_idxs = set()
@@ -328,11 +340,18 @@ def main():
     st.markdown("### Sugestão de Carta de Vinhos")
 
     with st.container():
-        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.4,1.2,1,1,1.6,0.9,1.2,1.6])
+        # AQUI: deixei a coluna do cliente mais larga e a do uploader mais estreita
+        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.8,0.8,1,1,1.6,0.9,1.2,1.6])
         with c1:
             cliente = st.text_input("Nome do Cliente", value="", placeholder="(opcional)", key="cliente_nome")
         with c2:
-            logo_cliente = st.file_uploader("Carregar logo (cliente)", type=["png","jpg","jpeg"], key="logo_cliente")
+            st.markdown("**Logo**")  # rótulo curto para caber na mesma linha
+            logo_cliente = st.file_uploader(
+                "Carregar logo (cliente)",
+                type=["png","jpg","jpeg"],
+                key="logo_cliente",
+                label_visibility="collapsed"  # colapsa o label longo
+            )
             logo_bytes = logo_cliente.read() if logo_cliente else None
         with c3:
             inserir_foto = st.checkbox("Inserir foto no PDF/Excel", value=True, key="chk_foto")
