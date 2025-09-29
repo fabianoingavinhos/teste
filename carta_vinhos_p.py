@@ -2,15 +2,17 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v4_debug.py
+app_streamlit_final_v5.py
 
 Novidades:
 - Adicionado log de depuração no callback update_selections para verificar seleções.
-- Mensagem informativa após st.data_editor mostrando número de itens selecionados.
-- Verificação extra ao carregar sugestões salvas para alertar sobre índices inválidos.
-- Otimização de performance com cache (@st.cache_data) e callback (on_change).
+- Fallback para capturar seleções diretamente do DataFrame editado, caso o callback falhe.
+- Botão 'Forçar Atualização' para atualizar seleções manualmente.
+- Mensagem informativa com número de itens selecionados e índices.
+- Verificação de índices ao carregar sugestões salvas.
 - Ordem fixa no PDF/Excel: Espumantes, Brancos, Rosés, Tintos, Fortificados, Vinhos de sobremesa.
 - Espaçamento extra entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
+- Otimização de performance com cache (@st.cache_data) e callback (on_change).
 """
 
 import os
@@ -444,21 +446,29 @@ def main():
         return view_df[["selecionado", "foto", "cod", "descricao", "pais", "regiao", "preco_base", "preco_de_venda", "fator", "idx"]]
 
     def update_selections():
-        edited = st.session_state["editor_main"]
-        st.write(f"[DEBUG] Dados editados recebidos: {len(edited)} linhas")
-        if isinstance(edited, pd.DataFrame) and not edited.empty:
-            selected_idxs = set(edited[edited["selecionado"] == True]["idx"].astype(int))
-            st.write(f"[DEBUG] Índices selecionados: {selected_idxs}")
-            st.session_state.selected_idxs = selected_idxs
-            for _, r in edited.iterrows():
-                try:
-                    idx = int(r["idx"])
-                except Exception:
-                    continue
-                if pd.notnull(r.get("fator")):
-                    st.session_state.manual_fat[idx] = float(r["fator"])
-                if pd.notnull(r.get("preco_de_venda")):
-                    st.session_state.manual_preco_venda[idx] = float(r["preco_de_venda"])
+        try:
+            edited = st.session_state.get("editor_main")
+            st.write(f"[DEBUG] Callback chamado. Tipo de dados recebidos: {type(edited)}")
+            if isinstance(edited, dict) and "data" in edited:
+                edited = pd.DataFrame(edited["data"])
+            if isinstance(edited, pd.DataFrame) and not edited.empty:
+                st.write(f"[DEBUG] Dados editados: {len(edited)} linhas")
+                selected_idxs = set(edited[edited["selecionado"] == True]["idx"].astype(int))
+                st.write(f"[DEBUG] Índices selecionados: {selected_idxs}")
+                st.session_state.selected_idxs = selected_idxs
+                for _, r in edited.iterrows():
+                    try:
+                        idx = int(r["idx"])
+                    except Exception:
+                        continue
+                    if pd.notnull(r.get("fator")):
+                        st.session_state.manual_fat[idx] = float(r["fator"])
+                    if pd.notnull(r.get("preco_de_venda")):
+                        st.session_state.manual_preco_venda[idx] = float(r["preco_de_venda"])
+            else:
+                st.write("[DEBUG] Dados editados inválidos ou vazios.")
+        except Exception as e:
+            st.error(f"[DEBUG] Erro no callback: {e}")
 
     view_df = preparar_view_df(df_filtrado)
 
@@ -466,7 +476,7 @@ def main():
         view_df,
         hide_index=True,
         column_config={
-            "selecionado": st.column_config.CheckboxColumn("SELECIONADO"),
+            "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
             "foto": st.column_config.TextColumn("FOTO"),
             "cod": st.column_config.TextColumn("COD"),
             "descricao": st.column_config.TextColumn("DESCRICAO"),
@@ -483,8 +493,18 @@ def main():
         on_change=update_selections,
     )
 
-    st.info(f"Total de itens selecionados: {len(st.session_state.selected_idxs)}")
+    # Fallback para capturar seleções manualmente
+    if isinstance(edited, pd.DataFrame) and not edited.empty:
+        selected_idxs = set(edited[edited["selecionado"] == True]["idx"].astype(int))
+        if selected_idxs != st.session_state.selected_idxs:
+            st.write(f"[DEBUG] Atualizando seleções via fallback: {selected_idxs}")
+            st.session_state.selected_idxs = selected_idxs
 
+    st.info(f"Total de itens selecionados: {len(st.session_state.selected_idxs)}")
+    if st.session_state.selected_idxs:
+        st.write(f"[DEBUG] Itens selecionados (índices): {st.session_state.selected_idxs}")
+
+    # Aplicar ajustes manuais
     for idx, fat in st.session_state.manual_fat.items():
         df.loc[df["idx"] == idx, "fator"] = float(fat)
     df["fator"] = to_float_series(df["fator"], default=float(fator_global))
@@ -495,7 +515,7 @@ def main():
         df.loc[df["idx"] == idx, "preco_de_venda"] = float(pv)
 
     # Botões de ação + salvar sugestão
-    cA, cB, cC, cD, cE, cF = st.columns([1,1.2,1.2,1.2,1.6,1.2])
+    cA, cB, cC, cD, cE, cF, cG = st.columns([1,1.2,1.2,1.2,1.6,1.2,1])
     with cA:
         ver_preview = st.button("Visualizar Sugestão", key="btn_preview")
     with cB:
@@ -508,10 +528,21 @@ def main():
         nome_sugestao = st.text_input("Nome da sugestão", value="", key="nome_sugestao_input")
     with cF:
         salvar_sugestao_btn = st.button("Salvar Sugestão (mesclar se existir)", key="btn_salvar")
+    with cG:
+        forcar_atualizacao = st.button("Forçar Atualização", key="btn_forcar")
+
+    # Forçar atualização das seleções
+    if forcar_atualizacao:
+        if isinstance(edited, pd.DataFrame) and not edited.empty:
+            selected_idxs = set(edited[edited["selecionado"] == True]["idx"].astype(int))
+            st.session_state.selected_idxs = selected_idxs
+            st.success(f"Seleções atualizadas: {len(selected_idxs)} itens.")
+        else:
+            st.error("Nenhum dado editado disponível para atualização.")
 
     if ver_preview:
         if not st.session_state.selected_idxs:
-            st.info("Nenhum item selecionado para pré-visualização.")
+            st.info("Nenhum item selecionado para pré-visualização. Marque itens na grade.")
         else:
             st.subheader("Pré-visualização da Sugestão")
             df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
@@ -554,7 +585,7 @@ def main():
 
     if ver_marcados:
         if not st.session_state.selected_idxs:
-            st.info("Nenhum item selecionado para visualização.")
+            st.info("Nenhum item selecionado para visualização. Marque itens na grade.")
         else:
             st.subheader("Itens Marcados")
             df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
