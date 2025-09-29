@@ -2,13 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v4.py
+app_streamlit_final_v4_debug.py
 
 Novidades:
-- Otimização de performance no st.data_editor com cache (@st.cache_data) e callback (on_change) para seleções mais rápidas.
-- Mantidas todas as funcionalidades: "Sugestões Salvas" com carregamento automático e mesclagem, preço de venda robusto (preco_de_venda = preco_base * fator).
+- Adicionado log de depuração no callback update_selections para verificar seleções.
+- Mensagem informativa após st.data_editor mostrando número de itens selecionados.
+- Verificação extra ao carregar sugestões salvas para alertar sobre índices inválidos.
+- Otimização de performance com cache (@st.cache_data) e callback (on_change).
 - Ordem fixa no PDF/Excel: Espumantes, Brancos, Rosés, Tintos, Fortificados, Vinhos de sobremesa.
-- Aumentado o espaçamento entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
+- Espaçamento extra entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
 """
 
 import os
@@ -443,8 +445,10 @@ def main():
 
     def update_selections():
         edited = st.session_state["editor_main"]
+        st.write(f"[DEBUG] Dados editados recebidos: {len(edited)} linhas")
         if isinstance(edited, pd.DataFrame) and not edited.empty:
             selected_idxs = set(edited[edited["selecionado"] == True]["idx"].astype(int))
+            st.write(f"[DEBUG] Índices selecionados: {selected_idxs}")
             st.session_state.selected_idxs = selected_idxs
             for _, r in edited.iterrows():
                 try:
@@ -479,6 +483,8 @@ def main():
         on_change=update_selections,
     )
 
+    st.info(f"Total de itens selecionados: {len(st.session_state.selected_idxs)}")
+
     for idx, fat in st.session_state.manual_fat.items():
         df.loc[df["idx"] == idx, "fator"] = float(fat)
     df["fator"] = to_float_series(df["fator"], default=float(fator_global))
@@ -505,7 +511,7 @@ def main():
 
     if ver_preview:
         if not st.session_state.selected_idxs:
-            st.info("Nenhum item selecionado.")
+            st.info("Nenhum item selecionado para pré-visualização.")
         else:
             st.subheader("Pré-visualização da Sugestão")
             df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
@@ -548,7 +554,7 @@ def main():
 
     if ver_marcados:
         if not st.session_state.selected_idxs:
-            st.info("Nenhum item selecionado.")
+            st.info("Nenhum item selecionado para visualização.")
         else:
             st.subheader("Itens Marcados")
             df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
@@ -557,7 +563,7 @@ def main():
 
     if gerar_pdf_btn:
         if not st.session_state.selected_idxs:
-            st.warning("Selecione ao menos um vinho.")
+            st.warning("Selecione ao menos um vinho na grade antes de gerar o PDF.")
         else:
             df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
             df_sel = ordenar_para_saida(df_sel)
@@ -566,7 +572,7 @@ def main():
 
     if exportar_excel_btn:
         if not st.session_state.selected_idxs:
-            st.warning("Selecione ao menos um vinho.")
+            st.warning("Selecione ao menos um vinho na grade antes de exportar para Excel.")
         else:
             df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
             df_sel = ordenar_para_saida(df_sel)
@@ -613,8 +619,14 @@ def main():
                 try:
                     with open(path) as f:
                         sugestao_indices = [int(x) for x in f.read().strip().split(",") if x]
-                    st.session_state.selected_idxs = set(sugestao_indices)
-                    st.info(f"Sugestão '{sel}' carregada: {len(sugestao_indices)} itens.")
+                    valid_indices = [idx for idx in sugestao_indices if idx in df["idx"].values]
+                    if valid_indices:
+                        st.session_state.selected_idxs = set(valid_indices)
+                        st.info(f"Sugestão '{sel}' carregada: {len(valid_indices)} itens válidos.")
+                    else:
+                        st.warning(f"Nenhum item da sugestão '{sel}' corresponde aos índices do DataFrame atual.")
+                    st.write(f"[DEBUG] Índices carregados da sugestão: {sugestao_indices}")
+                    st.write(f"[DEBUG] Índices válidos no DF: {set(df['idx'])}")
                 except Exception as e:
                     st.error(f"Erro ao carregar '{sel}': {e}")
 
