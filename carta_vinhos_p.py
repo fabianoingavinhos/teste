@@ -39,7 +39,7 @@ LOGO_PADRAO = os.path.join(CARTA_DIR, "logo_inga.png")
 
 TIPO_ORDEM_FIXA = [
     "Espumantes", "Brancos", "Rosés", "Tintos",
-    "Frisantes", "Fortificados", "Vinhos de sobremesa", "Licorosos"
+    "Fortificados", "Vinhos de sobremesa"
 ]
 
 # ===== Helpers =====
@@ -262,6 +262,7 @@ def gerar_pdf(df, titulo, cliente, inserir_foto, logo_cliente_bytes=None):
                         except Exception: pass
                     c.setFont("Helvetica-Bold", 16); c.drawCentredString(width/2, y, titulo); y -= 20
                     if cliente: c.setFont("Helvetica", 10); c.drawCentredString(width/2, y, f"Cliente: {cliente}"); y -= 20
+        y -= 10  # Espaço extra entre seções de tipo
 
     add_pdf_footer(c, contagem, ordem_geral-1, fator_geral=df.get('fator', pd.Series([0])).median())
     c.save(); buffer.seek(0)
@@ -302,6 +303,7 @@ def exportar_excel_like_pdf(df, inserir_foto=True):
                 if amad and amad.lower() != "nan":
                     ws.cell(row=row_num+1, column=3, value="🛢️").font = Font(size=10)
                 row_num += 2; ordem_geral += 1
+        row_num += 1  # Espaço extra entre seções de tipo
     stream = io.BytesIO(); wb.save(stream); stream.seek(0); return stream
 
 # ===================== APP =====================
