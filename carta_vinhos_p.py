@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v7.py
+app_streamlit_final_v8.py
 
 Novidades:
-- Corrigido erro em 'Resetar/Mostrar Todos' usando st.session_state.reset_filters para evitar atribuições diretas a chaves de widgets.
-- Corrigido problema de seleções não persistirem ao pesquisar, garantindo que st.session_state.selected_idxs seja mantido e validado.
+- Corrigido problema de seleções não persistirem ao filtrar: agora o callback update_selections atualiza incrementalmente (adiciona marcados, remove desmarcados, mantém seleções fora do view atual).
 - Mantido log de depuração no callback update_selections para verificar seleções.
-- Mantido fallback para capturar seleções diretamente do DataFrame editado.
+- Mantido fallback para capturar seleções diretamente do DataFrame editado, com atualização incremental.
 - Mantido botão 'Forçar Atualização' para seleções manuais.
+- Corrigido 'Resetar/Mostrar Todos' usando st.session_state.reset_filters para evitar erros de atribuição direta.
 - Substituído st.experimental_rerun() por st.rerun() em todo o código.
 - Ordem fixa no PDF/Excel: Espumantes, Brancos, Rosés, Tintos, Fortificados, Vinhos de sobremesa.
 - Espaçamento extra entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
@@ -407,7 +407,7 @@ def main():
     if preco_max and preco_max > 0:
         df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= float(preco_max)]
 
-    # Validar seleções contra índices válidos do DataFrame atual
+    # Validar seleções contra índices válidos do DataFrame original
     valid_selected_idxs = st.session_state.selected_idxs & set(df["idx"])
     if valid_selected_idxs != st.session_state.selected_idxs:
         st.write(f"[DEBUG] Ajustando seleções: de {st.session_state.selected_idxs} para {valid_selected_idxs}")
@@ -469,9 +469,13 @@ def main():
                 edited = pd.DataFrame(edited["data"])
             if isinstance(edited, pd.DataFrame) and not edited.empty:
                 st.write(f"[DEBUG] Dados editados: {len(edited)} linhas")
-                selected_idxs = set(edited[edited["selecionado"] == True]["idx"].astype(int))
-                st.write(f"[DEBUG] Índices selecionados: {selected_idxs}")
-                st.session_state.selected_idxs = selected_idxs
+                previous_selected = st.session_state.selected_idxs.copy()
+                current_view_idxs = set(edited["idx"])
+                current_selected = set(edited[edited["selecionado"] == True]["idx"].astype(int))
+                to_remove = previous_selected & current_view_idxs - current_selected
+                new_selected_idxs = (previous_selected - to_remove) | current_selected
+                st.write(f"[DEBUG] Índices selecionados atualizados: {new_selected_idxs}")
+                st.session_state.selected_idxs = new_selected_idxs
                 for _, r in edited.iterrows():
                     try:
                         idx = int(r["idx"])
@@ -512,10 +516,14 @@ def main():
 
     # Fallback para capturar seleções manualmente
     if isinstance(edited, pd.DataFrame) and not edited.empty:
-        selected_idxs = set(edited[edited["selecionado"] == True]["idx"].astype(int))
-        if selected_idxs != st.session_state.selected_idxs:
-            st.write(f"[DEBUG] Atualizando seleções via fallback: {selected_idxs}")
-            st.session_state.selected_idxs = selected_idxs
+        previous_selected = st.session_state.selected_idxs.copy()
+        current_view_idxs = set(edited["idx"])
+        current_selected = set(edited[edited["selecionado"] == True]["idx"].astype(int))
+        to_remove = previous_selected & current_view_idxs - current_selected
+        new_selected_idxs = (previous_selected - to_remove) | current_selected
+        if new_selected_idxs != st.session_state.selected_idxs:
+            st.write(f"[DEBUG] Atualizando seleções via fallback: {new_selected_idxs}")
+            st.session_state.selected_idxs = new_selected_idxs
 
     st.info(f"Total de itens selecionados: {len(st.session_state.selected_idxs)}")
     if st.session_state.selected_idxs:
@@ -551,9 +559,12 @@ def main():
     # Forçar atualização das seleções
     if forcar_atualizacao:
         if isinstance(edited, pd.DataFrame) and not edited.empty:
-            selected_idxs = set(edited[edited["selecionado"] == True]["idx"].astype(int))
-            st.session_state.selected_idxs = selected_idxs
-            st.success(f"Seleções atualizadas: {len(selected_idxs)} itens.")
+            current_selected = set(edited[edited["selecionado"] == True]["idx"].astype(int))
+            current_view_idxs = set(edited["idx"])
+            previous_selected = st.session_state.selected_idxs.copy()
+            to_remove = previous_selected & current_view_idxs - current_selected
+            st.session_state.selected_idxs = (previous_selected - to_remove) | current_selected
+            st.success(f"Seleções atualizadas: {len(st.session_state.selected_idxs)} itens.")
         else:
             st.error("Nenhum dado editado disponível para atualização.")
 
