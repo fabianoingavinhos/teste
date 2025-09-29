@@ -2,9 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v10.py
+app_streamlit_final_v11.py
 
 Novidades:
+- Adicionado st.rerun() após carregar sugestão salva para atualizar a grade automaticamente, refletindo seleções.
 - Removida mensagem de debug '[DEBUG] Índices válidos no view_df' para limpar a interface.
 - Removidas mensagens de debug '[DEBUG] Índices carregados da sugestão' e '[DEBUG] Índices válidos no DF' ao carregar sugestão.
 - Alterado carregamento de sugestão para mesclar índices com seleções existentes (st.session_state.selected_idxs |= set(valid_indices)).
@@ -707,8 +708,13 @@ def main():
                         sugestao_indices = [int(x) for x in f.read().strip().split(",") if x]
                     valid_indices = [idx for idx in sugestao_indices if idx in df["idx"].values]
                     if valid_indices:
+                        previous_selected = st.session_state.selected_idxs.copy()
                         st.session_state.selected_idxs |= set(valid_indices)
-                        st.info(f"Sugestão '{sel}' carregada: {len(valid_indices)} itens válidos mesclados com seleções existentes.")
+                        if st.session_state.selected_idxs != previous_selected:
+                            st.info(f"Sugestão '{sel}' carregada: {len(valid_indices)} itens válidos mesclados com seleções existentes.")
+                            st.rerun()  # Força atualização da grade
+                        else:
+                            st.info(f"Sugestão '{sel}' carregada, mas todos os {len(valid_indices)} itens já estavam selecionados.")
                     else:
                         st.warning(f"Nenhum item da sugestão '{sel}' corresponde aos índices do DataFrame atual.")
                 except Exception as e:
