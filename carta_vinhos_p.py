@@ -2,25 +2,26 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v16.py
+app_streamlit_final_v17.py
 
 Novidades:
-- Corrigido problema de inicialização do aplicativo com verificações robustas para vinhos1.xls.
-- Adicionadas mensagens de erro claras para falhas de carregamento de arquivo ou dependências.
-- Simplificada inicialização de st.session_state para evitar conflitos.
-- Corrigido carregamento de sugestões salvas para atualizar st.session_state.selected_idxs e refletir na grade.
-- Garantida captura de seleções manuais ao salvar alterações em sugestões (mesclar).
-- Mantido fix do botão 'Limpar seleção atual' com chave única para re-renderizar a grade.
-- Melhorado callback update_selections() para seleções manuais confiáveis.
-- Adicionado debug opcional (desativado por padrão) para verificar st.session_state.selected_idxs.
+- Otimizado desempenho do st.data_editor para reduzir lentidão ao marcar/desmarcar itens.
+- Removido @st.cache_data de preparar_view_df para evitar overhead em atualizações frequentes.
+- Simplificado callback update_selections para processar apenas mudanças necessárias.
+- Reduzido número de colunas no st.data_editor para melhorar renderização.
+- Mantidas correções para inicialização robusta (verificação de vinhos1.xls e dependências).
+- Mantido carregamento de sugestões salvas com atualização correta de st.session_state.selected_idxs.
+- Mantido salvamento de sugestões com mesclagem de índices novos e existentes.
+- Mantido botão 'Limpar seleção atual' com chave única para re-renderizar a grade.
+- Adicionado debug opcional para monitorar desempenho e seleções.
 - Mantida ordem fixa dos tipos: Espumantes, Frisantes, Vinhos Brancos, Vinhos Rosés, Vinhos Tintos, Fortificados, Vinhos Sobremesas, Licorosos.
 - Espaçamento extra entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
-- Otimização com @st.cache_data e callback (on_change).
 """
 
 import os
 import io
 from datetime import datetime
+import time
 
 import streamlit as st
 import pandas as pd
@@ -346,6 +347,8 @@ def main():
         st.session_state.reset_filters = False
     if "last_suggestion" not in st.session_state:
         st.session_state.last_suggestion = ""
+    if "last_update_time" not in st.session_state:
+        st.session_state.last_update_time = 0
 
     st.markdown("### Sugestão de Carta de Vinhos")
 
@@ -471,8 +474,8 @@ def main():
                f"Total: {total} | Selecionados: {selecionados} | Fator: {float(fator_global):.2f}")
 
     # === Grade com seleção ===
-    @st.cache_data
     def preparar_view_df(df_filtrado, selected_idxs):
+        start_time = time.time()
         view_df = df_filtrado.copy()
         if not isinstance(view_df, pd.DataFrame):
             view_df = pd.DataFrame(view_df)
@@ -501,11 +504,17 @@ def main():
                 view_df[_c] = to_float_series(_col, default=0.0)
             else:
                 view_df[_c] = 0.0
-        view_df["selecionado"] = view_df["idx"].apply(lambda i: i in selected_idxs)
-        view_df["foto"] = view_df["cod"].apply(lambda c: "●" if get_imagem_file(str(c)) else "")
-        return view_df[["selecionado", "foto", "cod", "descricao", "pais", "regiao", "preco_base", "preco_de_venda", "fator", "idx"]]
+        view_df["selecionado"] = view_df["idx"].isin(selected_idxs)
+        # Debug: Tempo de preparação da grade
+        # st.write(f"Tempo de preparação da grade: {time.time() - start_time:.2f} segundos")
+        return view_df[["selecionado", "cod", "descricao", "pais", "preco_de_venda", "idx"]]
 
     def update_selections():
+        start_time = time.time()
+        current_time = time.time()
+        if current_time - st.session_state.last_update_time < 0.5:  # Debounce de 0.5s
+            return
+        st.session_state.last_update_time = current_time
         try:
             edited = st.session_state.get("editor_main")
             if isinstance(edited, dict) and "data" in edited:
@@ -520,15 +529,7 @@ def main():
                     st.session_state.selected_idxs = new_selected_idxs
                     # Debug: Verificar seleções após callback
                     # st.write(f"Seleções após callback: {st.session_state.selected_idxs}")
-                for _, r in edited.iterrows():
-                    try:
-                        idx = int(r["idx"])
-                    except Exception:
-                        continue
-                    if pd.notnull(r.get("fator")):
-                        st.session_state.manual_fat[idx] = float(r["fator"])
-                    if pd.notnull(r.get("preco_de_venda")):
-                        st.session_state.manual_preco_venda[idx] = float(r["preco_de_venda"])
+                    # st.write(f"Tempo de update_selections: {time.time() - start_time:.2f} segundos")
         except Exception as e:
             st.error(f"Erro no callback de atualização: {e}")
 
@@ -539,14 +540,10 @@ def main():
         hide_index=True,
         column_config={
             "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
-            "foto": st.column_config.TextColumn("FOTO"),
             "cod": st.column_config.TextColumn("COD"),
             "descricao": st.column_config.TextColumn("DESCRICAO"),
             "pais": st.column_config.TextColumn("PAIS"),
-            "regiao": st.column_config.TextColumn("REGIAO"),
-            "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
             "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
-            "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
             "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
         },
         use_container_width=True,
@@ -557,15 +554,18 @@ def main():
 
     # Fallback para seleções manuais
     if isinstance(edited, pd.DataFrame) and not edited.empty:
-        previous_selected = st.session_state.selected_idxs.copy()
-        current_view_idxs = set(edited["idx"].astype(int))
-        current_selected = set(edited[edited["selecionado"] == True]["idx"].astype(int))
-        to_remove = previous_selected & current_view_idxs - current_selected
-        new_selected_idxs = (previous_selected - to_remove) | current_selected
-        if new_selected_idxs != st.session_state.selected_idxs:
-            st.session_state.selected_idxs = new_selected_idxs
-            # Debug: Verificar seleções após fallback
-            # st.write(f"Seleções após fallback: {st.session_state.selected_idxs}")
+        current_time = time.time()
+        if current_time - st.session_state.last_update_time >= 0.5:
+            previous_selected = st.session_state.selected_idxs.copy()
+            current_view_idxs = set(edited["idx"].astype(int))
+            current_selected = set(edited[edited["selecionado"] == True]["idx"].astype(int))
+            to_remove = previous_selected & current_view_idxs - current_selected
+            new_selected_idxs = (previous_selected - to_remove) | current_selected
+            if new_selected_idxs != st.session_state.selected_idxs:
+                st.session_state.selected_idxs = new_selected_idxs
+                st.session_state.last_update_time = current_time
+                # Debug: Verificar seleções após fallback
+                # st.write(f"Seleções após fallback: {st.session_state.selected_idxs}")
 
     st.info(f"Total de itens selecionados: {len(st.session_state.selected_idxs)}")
 
@@ -608,14 +608,10 @@ def main():
             view_df = preparar_view_df(df_filtrado, st.session_state.selected_idxs)
             st.data_editor(view_df, key=f"editor_main_updated_{datetime.now().timestamp()}", column_config={
                 "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
-                "foto": st.column_config.TextColumn("FOTO"),
                 "cod": st.column_config.TextColumn("COD"),
                 "descricao": st.column_config.TextColumn("DESCRICAO"),
                 "pais": st.column_config.TextColumn("PAIS"),
-                "regiao": st.column_config.TextColumn("REGIAO"),
-                "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
                 "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
-                "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
                 "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
             }, use_container_width=True, num_rows="dynamic", on_change=update_selections)
         else:
@@ -746,14 +742,10 @@ def main():
                             key=f"editor_sugestao_{sel}_{datetime.now().timestamp()}",
                             column_config={
                                 "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
-                                "foto": st.column_config.TextColumn("FOTO"),
                                 "cod": st.column_config.TextColumn("COD"),
                                 "descricao": st.column_config.TextColumn("DESCRICAO"),
                                 "pais": st.column_config.TextColumn("PAIS"),
-                                "regiao": st.column_config.TextColumn("REGIAO"),
-                                "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
                                 "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
-                                "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
                                 "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
                             },
                             use_container_width=True,
@@ -815,14 +807,10 @@ def main():
                     key=f"editor_main_limpar_{datetime.now().timestamp()}",
                     column_config={
                         "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
-                        "foto": st.column_config.TextColumn("FOTO"),
                         "cod": st.column_config.TextColumn("COD"),
                         "descricao": st.column_config.TextColumn("DESCRICAO"),
                         "pais": st.column_config.TextColumn("PAIS"),
-                        "regiao": st.column_config.TextColumn("REGIAO"),
-                        "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
                         "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
-                        "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
                         "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
                     },
                     use_container_width=True,
