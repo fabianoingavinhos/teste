@@ -2,14 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v12.py
+app_streamlit_final_v13.py
 
 Novidades:
-- Corrigido SyntaxError causado por tags inválidas.
+- Corrigido SyntaxError causado por tags inválidas (e.g., <xaiArtifact>).
+- Corrigido botão 'Limpar seleção atual' para limpar st.session_state.selected_idxs e atualizar a grade (st.data_editor) com todas as caixas desmarcadas.
+- Adicionado chave única com timestamp no st.data_editor do 'Limpar seleção atual' para forçar re-renderização.
 - Corrigido carregamento de sugestões salvas para atualizar a grade diretamente sem st.rerun().
 - Garantida mesclagem de seleções ao carregar sugestão salva.
 - Corrigida visualização de sugestões e geração de PDF/Excel para refletir seleções corretamente.
-- Atualizada função preparar_view_df para aceitar selected_idxs e refletir seleções na grade.
 - Mantida ordem fixa dos tipos: Espumantes, Frisantes, Vinhos Brancos, Vinhos Rosés, Vinhos Tintos, Fortificados, Vinhos Sobremesas, Licorosos.
 - Mantido fallback para capturar seleções manualmente via st.data_editor.
 - Mantido botão 'Forçar Atualização' para sincronizar seleções manuais.
@@ -779,20 +780,32 @@ def main():
                     st.info("Selecione uma sugestão na lista.")
         with colz:
             if st.button("Limpar seleção atual", key="btn_limpar_sel"):
+                # Clear the selected indices
                 st.session_state.selected_idxs = set()
+                # Update view_df with no selections
                 view_df = preparar_view_df(df_filtrado, st.session_state.selected_idxs)
-                st.data_editor(view_df, key="editor_main_limpar", column_config={
-                    "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
-                    "foto": st.column_config.TextColumn("FOTO"),
-                    "cod": st.column_config.TextColumn("COD"),
-                    "descricao": st.column_config.TextColumn("DESCRICAO"),
-                    "pais": st.column_config.TextColumn("PAIS"),
-                    "regiao": st.column_config.TextColumn("REGIAO"),
-                    "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
-                    "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
-                    "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
-                    "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
-                }, use_container_width=True, num_rows="dynamic")
+                # Re-render the grid with a unique key to force update
+                st.data_editor(
+                    view_df,
+                    key=f"editor_main_limpar_{datetime.now().timestamp()}",
+                    column_config={
+                        "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
+                        "foto": st.column_config.TextColumn("FOTO"),
+                        "cod": st.column_config.TextColumn("COD"),
+                        "descricao": st.column_config.TextColumn("DESCRICAO"),
+                        "pais": st.column_config.TextColumn("PAIS"),
+                        "regiao": st.column_config.TextColumn("REGIAO"),
+                        "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
+                        "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
+                        "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
+                        "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
+                    },
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    hide_index=True,
+                )
+                st.success("Seleções limpas com sucesso. Todas as caixas de seleção foram desmarcadas.")
+                st.info(f"Total de itens selecionados: {len(st.session_state.selected_idxs)}")
 
     with tab2:
         st.caption("Cadastrar novo produto (entra apenas na sessão atual; salve no seu Excel depois, se quiser persistir).")
@@ -841,4 +854,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
