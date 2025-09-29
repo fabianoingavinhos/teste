@@ -2,18 +2,16 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v13.py
+app_streamlit_final_v14.py
 
 Novidades:
-- Corrigido SyntaxError causado por tags inválidas (e.g., <xaiArtifact>).
-- Corrigido botão 'Limpar seleção atual' para limpar st.session_state.selected_idxs e atualizar a grade (st.data_editor) com todas as caixas desmarcadas.
-- Adicionado chave única com timestamp no st.data_editor do 'Limpar seleção atual' para forçar re-renderização.
-- Corrigido carregamento de sugestões salvas para atualizar a grade diretamente sem st.rerun().
-- Garantida mesclagem de seleções ao carregar sugestão salva.
-- Corrigida visualização de sugestões e geração de PDF/Excel para refletir seleções corretamente.
+- Corrigido carregamento de sugestões salvas para atualizar st.session_state.selected_idxs e refletir na grade (st.data_editor).
+- Garantida captura de novas seleções manuais ao salvar alterações em sugestões existentes (mesclar).
+- Mantido fix do botão 'Limpar seleção atual' para limpar seleções e atualizar grade com chave única.
+- Melhorada captura de seleções manuais via callback update_selections().
+- Adicionado debug opcional para verificar st.session_state.selected_idxs.
 - Mantida ordem fixa dos tipos: Espumantes, Frisantes, Vinhos Brancos, Vinhos Rosés, Vinhos Tintos, Fortificados, Vinhos Sobremesas, Licorosos.
-- Mantido fallback para capturar seleções manualmente via st.data_editor.
-- Mantido botão 'Forçar Atualização' para sincronizar seleções manuais.
+- Mantido fallback para seleções manuais via 'Forçar Atualização'.
 - Substituído st.experimental_rerun() por st.rerun() onde necessário.
 - Espaçamento extra entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
 - Otimização com @st.cache_data e callback (on_change).
@@ -331,6 +329,8 @@ def main():
         st.session_state.cadastrados = []
     if "reset_filters" not in st.session_state:
         st.session_state.reset_filters = False
+    if "last_suggestion" not in st.session_state:
+        st.session_state.last_suggestion = ""
 
     st.markdown("### Sugestão de Carta de Vinhos")
 
@@ -497,11 +497,14 @@ def main():
                 edited = pd.DataFrame(edited["data"])
             if isinstance(edited, pd.DataFrame) and not edited.empty:
                 previous_selected = st.session_state.selected_idxs.copy()
-                current_view_idxs = set(edited["idx"])
+                current_view_idxs = set(edited["idx"].astype(int))
                 current_selected = set(edited[edited["selecionado"] == True]["idx"].astype(int))
                 to_remove = previous_selected & current_view_idxs - current_selected
                 new_selected_idxs = (previous_selected - to_remove) | current_selected
-                st.session_state.selected_idxs = new_selected_idxs
+                if new_selected_idxs != st.session_state.selected_idxs:
+                    st.session_state.selected_idxs = new_selected_idxs
+                    # Debug: Verificar seleções após atualização
+                    # st.write(f"Seleções após callback: {st.session_state.selected_idxs}")
                 for _, r in edited.iterrows():
                     try:
                         idx = int(r["idx"])
@@ -540,12 +543,14 @@ def main():
     # Fallback para capturar seleções manualmente
     if isinstance(edited, pd.DataFrame) and not edited.empty:
         previous_selected = st.session_state.selected_idxs.copy()
-        current_view_idxs = set(edited["idx"])
+        current_view_idxs = set(edited["idx"].astype(int))
         current_selected = set(edited[edited["selecionado"] == True]["idx"].astype(int))
         to_remove = previous_selected & current_view_idxs - current_selected
         new_selected_idxs = (previous_selected - to_remove) | current_selected
         if new_selected_idxs != st.session_state.selected_idxs:
             st.session_state.selected_idxs = new_selected_idxs
+            # Debug: Verificar seleções após fallback
+            # st.write(f"Seleções após fallback: {st.session_state.selected_idxs}")
 
     st.info(f"Total de itens selecionados: {len(st.session_state.selected_idxs)}")
 
@@ -580,7 +585,7 @@ def main():
     if forcar_atualizacao:
         if isinstance(edited, pd.DataFrame) and not edited.empty:
             current_selected = set(edited[edited["selecionado"] == True]["idx"].astype(int))
-            current_view_idxs = set(edited["idx"])
+            current_view_idxs = set(edited["idx"].astype(int))
             previous_selected = st.session_state.selected_idxs.copy()
             to_remove = previous_selected & current_view_idxs - current_selected
             st.session_state.selected_idxs = (previous_selected - to_remove) | current_selected
@@ -707,7 +712,8 @@ def main():
         sel = st.selectbox("Abrir sugestão", [""] + [a[:-4] for a in arquivos], key="sel_sugestao")
 
         sugestao_indices = []
-        if sel:
+        if sel and sel != st.session_state.last_suggestion:
+            st.session_state.last_suggestion = sel
             path = os.path.join(SUGESTOES_DIR, f"{sel}.txt")
             if os.path.exists(path):
                 try:
@@ -719,20 +725,29 @@ def main():
                         st.session_state.selected_idxs |= set(valid_indices)
                         if st.session_state.selected_idxs != previous_selected:
                             st.info(f"Sugestão '{sel}' carregada: {len(valid_indices)} itens válidos mesclados com seleções existentes.")
+                            # Debug: Verificar seleções após carregar
+                            # st.write(f"Seleções após carregar sugestão: {st.session_state.selected_idxs}")
                             # Atualiza view_df diretamente
                             view_df = preparar_view_df(df_filtrado, st.session_state.selected_idxs)
-                            st.data_editor(view_df, key=f"editor_main_sugestao_{sel}", column_config={
-                                "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
-                                "foto": st.column_config.TextColumn("FOTO"),
-                                "cod": st.column_config.TextColumn("COD"),
-                                "descricao": st.column_config.TextColumn("DESCRICAO"),
-                                "pais": st.column_config.TextColumn("PAIS"),
-                                "regiao": st.column_config.TextColumn("REGIAO"),
-                                "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
-                                "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
-                                "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
-                                "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
-                            }, use_container_width=True, num_rows="dynamic")
+                            st.data_editor(
+                                view_df,
+                                key=f"editor_sugestao_{sel}_{datetime.now().timestamp()}",
+                                column_config={
+                                    "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
+                                    "foto": st.column_config.TextColumn("FOTO"),
+                                    "cod": st.column_config.TextColumn("COD"),
+                                    "descricao": st.column_config.TextColumn("DESCRICAO"),
+                                    "pais": st.column_config.TextColumn("PAIS"),
+                                    "regiao": st.column_config.TextColumn("REGIAO"),
+                                    "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
+                                    "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
+                                    "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
+                                    "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
+                                },
+                                use_container_width=True,
+                                num_rows="dynamic",
+                                on_change=update_selections,
+                            )
                         else:
                             st.info(f"Sugestão '{sel}' carregada, mas todos os {len(valid_indices)} itens já estavam selecionados.")
                     else:
@@ -756,6 +771,7 @@ def main():
                     try:
                         os.remove(os.path.join(SUGESTOES_DIR, f"{sel}.txt"))
                         st.success(f"Sugestão '{sel}' excluída.")
+                        st.session_state.last_suggestion = ""
                         st.rerun()
                     except Exception as e:
                         st.error(f"Erro ao excluir: {e}")
@@ -774,17 +790,16 @@ def main():
                         with open(path, "w") as f:
                             f.write(",".join(map(str, sorted(list(new_set)))))
                         st.success(f"Sugestão '{sel}' atualizada (itens mesclados).")
+                        # Debug: Verificar seleções salvas
+                        # st.write(f"Seleções salvas: {new_set}")
                     except Exception as e:
                         st.error(f"Erro ao salvar: {e}")
                 else:
                     st.info("Selecione uma sugestão na lista.")
         with colz:
             if st.button("Limpar seleção atual", key="btn_limpar_sel"):
-                # Clear the selected indices
                 st.session_state.selected_idxs = set()
-                # Update view_df with no selections
                 view_df = preparar_view_df(df_filtrado, st.session_state.selected_idxs)
-                # Re-render the grid with a unique key to force update
                 st.data_editor(
                     view_df,
                     key=f"editor_main_limpar_{datetime.now().timestamp()}",
@@ -803,6 +818,7 @@ def main():
                     use_container_width=True,
                     num_rows="dynamic",
                     hide_index=True,
+                    on_change=update_selections,
                 )
                 st.success("Seleções limpas com sucesso. Todas as caixas de seleção foram desmarcadas.")
                 st.info(f"Total de itens selecionados: {len(st.session_state.selected_idxs)}")
