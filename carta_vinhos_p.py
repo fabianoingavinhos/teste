@@ -2,10 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v11.py
+app_streamlit_final_v10.py
 
 Novidades:
-- Adicionado st.rerun() após carregar sugestão salva para atualizar a grade automaticamente, refletindo seleções.
 - Removida mensagem de debug '[DEBUG] Índices válidos no view_df' para limpar a interface.
 - Removidas mensagens de debug '[DEBUG] Índices carregados da sugestão' e '[DEBUG] Índices válidos no DF' ao carregar sugestão.
 - Alterado carregamento de sugestão para mesclar índices com seleções existentes (st.session_state.selected_idxs |= set(valid_indices)).
@@ -712,7 +711,7 @@ def main():
                         st.session_state.selected_idxs |= set(valid_indices)
                         if st.session_state.selected_idxs != previous_selected:
                             st.info(f"Sugestão '{sel}' carregada: {len(valid_indices)} itens válidos mesclados com seleções existentes.")
-                            st.rerun()  # Força atualização da grade
+                            st.rerun()
                         else:
                             st.info(f"Sugestão '{sel}' carregada, mas todos os {len(valid_indices)} itens já estavam selecionados.")
                     else:
@@ -811,3 +810,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+</xaiArtifact>
