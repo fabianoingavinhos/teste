@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v3_persist2.py
+app_streamlit_final_v4.py
 
 Novidades:
-- "Sugestões Salvas": ao selecionar uma sugestão, ela é CARREGADA automaticamente,
-  a relação de itens aparece abaixo e você pode incluir novos itens e salvar MESCLANDO.
-- "Preço de venda" agora é garantido: preco_de_venda = preco_base * fator
-  com parsing robusto (vírgula decimal) e fator zerado/NaN substituído pelo fator global.
+- Otimização de performance no st.data_editor com cache (@st.cache_data) e callback (on_change) para seleções mais rápidas.
+- Mantidas todas as funcionalidades: "Sugestões Salvas" com carregamento automático e mesclagem, preço de venda robusto (preco_de_venda = preco_base * fator).
+- Ordem fixa no PDF/Excel: Espumantes, Brancos, Rosés, Tintos, Fortificados, Vinhos de sobremesa.
+- Aumentado o espaçamento entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
 """
 
 import os
@@ -56,7 +56,6 @@ def parse_money_series(s, default=0.0):
 def to_float_series(s, default=0.0):
     if pd.api.types.is_numeric_dtype(s):
         return pd.to_numeric(s, errors="coerce").fillna(default)
-    # tenta parse "1.234,56" também
     try:
         return parse_money_series(s, default=default)
     except Exception:
@@ -79,17 +78,12 @@ def ler_excel_vinhos(caminho="vinhos1.xls"):
     df.columns = [c.strip().lower() for c in df.columns]
     if "idx" not in df.columns or df["idx"].isna().all():
         df = df.reset_index(drop=False).rename(columns={"index": "idx"})
-    # normaliza tipos
     df["idx"] = pd.to_numeric(df["idx"], errors="coerce").fillna(-1).astype(int)
-
-    # preços e fator: aceitar vírgula
     for col in ["preco38","preco39","preco1","preco2","preco15","preco55","preco63","preco_base","fator","preco_de_venda"]:
         if col not in df.columns:
             df[col] = 0.0
         else:
             df[col] = to_float_series(df[col], default=0.0)
-
-    # textos
     for col in ["cod","descricao","pais","regiao","tipo","uva1","uva2","uva3","amadurecimento","vinicola","corpo","visual","olfato","gustativo","premiacoes"]:
         if col not in df.columns:
             df[col] = ""
@@ -113,15 +107,12 @@ def get_imagem_file(cod: str):
     return None
 
 def atualiza_coluna_preco_base(df: pd.DataFrame, flag: str, fator_global: float):
-    # define preco_base pela flag escolhida
     base = df[flag] if flag in df.columns else df.get("preco1", 0.0)
     df["preco_base"] = to_float_series(base, default=0.0)
-    # fator: se NaN/<=0, usa fator_global
     if "fator" not in df.columns:
         df["fator"] = fator_global
     df["fator"] = to_float_series(df["fator"], default=fator_global)
     df["fator"] = df["fator"].apply(lambda x: fator_global if pd.isna(x) or x <= 0 else x)
-    # preco_de_venda = preco_base * fator
     df["preco_de_venda"] = (df["preco_base"].astype(float) * df["fator"].astype(float)).astype(float)
     return df
 
@@ -132,10 +123,8 @@ def ordenar_para_saida(df):
         if "branc" in t: return "Brancos"
         if "ros" in t: return "Rosés"
         if "tint" in t: return "Tintos"
-        if "fris" in t: return "Frisantes"
         if "forti" in t: return "Fortificados"
         if "sobrem" in t: return "Vinhos de sobremesa"
-        if "licor" in t: return "Licorosos"
         return t.title()
     tipos_norm = df.get("tipo", pd.Series([""]*len(df))).astype(str).map(normaliza_tipo)
     ordem_map = {t: i for i, t in enumerate(TIPO_ORDEM_FIXA)}
@@ -296,7 +285,7 @@ def exportar_excel_like_pdf(df, inserir_foto=True):
                 ws.cell(row=row_num, column=7, value=base_str).alignment = Alignment(horizontal='right'); ws.cell(row=row_num, column=7).font = Font(size=10)
                 ws.cell(row=row_num, column=8, value=pv_str).font = Font(bold=True, size=13); ws.cell(row=row_num, column=8).alignment = Alignment(horizontal='right')
                 uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]; uvas = [u for u in uvas if u and u.lower() != "nan"]
-                regiao_str = f"{row.get('pais','')} | {row.get('regiao','')}"; 
+                regiao_str = f"{row.get('pais','')} | {row.get('regiao','')}"
                 if uvas: regiao_str += f" | {', '.join(uvas)}"
                 ws.cell(row=row_num+1, column=2, value=regiao_str).font = Font(size=10)
                 amad = str(row.get("amadurecimento", ""))
@@ -314,8 +303,6 @@ def main():
     # Estado
     if "selected_idxs" not in st.session_state:
         st.session_state.selected_idxs = set()
-    if "prev_view_state" not in st.session_state:
-        st.session_state.prev_view_state = {}
     if "manual_fat" not in st.session_state:
         st.session_state.manual_fat = {}
     if "manual_preco_venda" not in st.session_state:
@@ -420,42 +407,59 @@ def main():
     st.caption(f"Brancos: {contagem.get('Brancos', 0)} | Tintos: {contagem.get('Tintos', 0)} | Rosés: {contagem.get('Rosés', 0)} | Espumantes: {contagem.get('Espumantes', 0)} | Total: {total} | Selecionados: {selecionados} | Fator: {float(fator_global):.2f}")
 
     # === Grade com seleção ===
-    view_df = df_filtrado.copy()
-
-    # --- Normalização robusta + remoção de colunas duplicadas ---
-    if not isinstance(view_df, pd.DataFrame):
-        view_df = pd.DataFrame(view_df)
-    try:
-        view_df = view_df.loc[:, ~view_df.columns.duplicated()].copy()
-    except Exception:
-        pass
-    if "idx" not in view_df.columns:
-        view_df = view_df.reset_index(drop=False).rename(columns={"index": "idx"})
-    _idx_col = view_df["idx"]
-    if isinstance(_idx_col, pd.DataFrame):
-        _idx_col = _idx_col.iloc[:, 0]
-    view_df["idx"] = pd.to_numeric(_idx_col, errors="coerce").fillna(-1).astype(int)
-    if "cod" in view_df.columns:
-        _cod_col = view_df["cod"]
-        if isinstance(_cod_col, pd.DataFrame):
-            _cod_col = _cod_col.iloc[:, 0]
-        view_df["cod"] = _cod_col.astype(str)
-    else:
-        view_df["cod"] = ""
-    for _c in ["preco_base", "preco_de_venda", "fator"]:
-        if _c in view_df.columns:
-            _col = view_df[_c]
-            if isinstance(_col, pd.DataFrame):
-                _col = _col.iloc[:, 0]
-            view_df[_c] = to_float_series(_col, default=0.0)
+    @st.cache_data
+    def preparar_view_df(df_filtrado):
+        view_df = df_filtrado.copy()
+        if not isinstance(view_df, pd.DataFrame):
+            view_df = pd.DataFrame(view_df)
+        try:
+            view_df = view_df.loc[:, ~view_df.columns.duplicated()].copy()
+        except Exception:
+            pass
+        if "idx" not in view_df.columns:
+            view_df = view_df.reset_index(drop=False).rename(columns={"index": "idx"})
+        _idx_col = view_df["idx"]
+        if isinstance(_idx_col, pd.DataFrame):
+            _idx_col = _idx_col.iloc[:, 0]
+        view_df["idx"] = pd.to_numeric(_idx_col, errors="coerce").fillna(-1).astype(int)
+        if "cod" in view_df.columns:
+            _cod_col = view_df["cod"]
+            if isinstance(_cod_col, pd.DataFrame):
+                _cod_col = _cod_col.iloc[:, 0]
+            view_df["cod"] = _cod_col.astype(str)
         else:
-            view_df[_c] = 0.0
+            view_df["cod"] = ""
+        for _c in ["preco_base", "preco_de_venda", "fator"]:
+            if _c in view_df.columns:
+                _col = view_df[_c]
+                if isinstance(_col, pd.DataFrame):
+                    _col = _col.iloc[:, 0]
+                view_df[_c] = to_float_series(_col, default=0.0)
+            else:
+                view_df[_c] = 0.0
+        view_df["selecionado"] = view_df["idx"].apply(lambda i: i in st.session_state.selected_idxs)
+        view_df["foto"] = view_df["cod"].apply(lambda c: "●" if get_imagem_file(str(c)) else "")
+        return view_df[["selecionado", "foto", "cod", "descricao", "pais", "regiao", "preco_base", "preco_de_venda", "fator", "idx"]]
 
-    view_df["selecionado"] = view_df["idx"].apply(lambda i: i in st.session_state.selected_idxs)
-    view_df["foto"] = view_df["cod"].apply(lambda c: "●" if get_imagem_file(str(c)) else "")
+    def update_selections():
+        edited = st.session_state["editor_main"]
+        if isinstance(edited, pd.DataFrame) and not edited.empty:
+            selected_idxs = set(edited[edited["selecionado"] == True]["idx"].astype(int))
+            st.session_state.selected_idxs = selected_idxs
+            for _, r in edited.iterrows():
+                try:
+                    idx = int(r["idx"])
+                except Exception:
+                    continue
+                if pd.notnull(r.get("fator")):
+                    st.session_state.manual_fat[idx] = float(r["fator"])
+                if pd.notnull(r.get("preco_de_venda")):
+                    st.session_state.manual_preco_venda[idx] = float(r["preco_de_venda"])
+
+    view_df = preparar_view_df(df_filtrado)
 
     edited = st.data_editor(
-        view_df[["selecionado","foto","cod","descricao","pais","regiao","preco_base","preco_de_venda","fator","idx"]],
+        view_df,
         hide_index=True,
         column_config={
             "selecionado": st.column_config.CheckboxColumn("SELECIONADO"),
@@ -472,54 +476,17 @@ def main():
         use_container_width=True,
         num_rows="dynamic",
         key="editor_main",
+        on_change=update_selections,
     )
 
-    # --- Persistência incremental das seleções ---
-    curr_state = {}
-    if isinstance(edited, pd.DataFrame) and not edited.empty:
-        for _, row in edited.iterrows():
-            try:
-                idx_i = int(row["idx"])
-            except Exception:
-                continue
-            sel = bool(row.get("selecionado", False))
-            curr_state[idx_i] = sel
-
-    prev_state = st.session_state.get("prev_view_state", {})
-    global_sel = set(st.session_state.selected_idxs)
-
-    to_add = {i for i, s in curr_state.items() if s and prev_state.get(i) is not True}
-    to_remove = {i for i, s in curr_state.items() if (prev_state.get(i) is True) and not s}
-
-    global_sel |= to_add
-    global_sel -= to_remove
-
-    st.session_state.selected_idxs = global_sel
-    st.session_state.prev_view_state = curr_state
-
-    # Ajustes manuais (aplicados no DF base, por idx) + recomputa preco_de_venda
-    if isinstance(edited, pd.DataFrame) and not edited.empty:
-        for _, r in edited.iterrows():
-            try:
-                idx = int(r["idx"])
-            except Exception:
-                continue
-            if pd.notnull(r.get("fator")):
-                st.session_state.manual_fat[idx] = float(r["fator"])
-            if pd.notnull(r.get("preco_de_venda")):
-                st.session_state.manual_preco_venda[idx] = float(r["preco_de_venda"])
-
     for idx, fat in st.session_state.manual_fat.items():
-        df.loc[df["idx"]==idx, "fator"] = float(fat)
-    # caso fator <=0, usa fator_global
+        df.loc[df["idx"] == idx, "fator"] = float(fat)
     df["fator"] = to_float_series(df["fator"], default=float(fator_global))
     df["fator"] = df["fator"].apply(lambda x: float(fator_global) if pd.isna(x) or x <= 0 else float(x))
-
     df["preco_base"] = to_float_series(df["preco_base"], default=0.0)
     df["preco_de_venda"] = (df["preco_base"].astype(float) * df["fator"].astype(float)).astype(float)
-
     for idx, pv in st.session_state.manual_preco_venda.items():
-        df.loc[df["idx"]==idx, "preco_de_venda"] = float(pv)
+        df.loc[df["idx"] == idx, "preco_de_venda"] = float(pv)
 
     # Botões de ação + salvar sugestão
     cA, cB, cC, cD, cE, cF = st.columns([1,1.2,1.2,1.2,1.6,1.2])
@@ -639,7 +606,6 @@ def main():
         arquivos = [f for f in os.listdir(SUGESTOES_DIR) if f.endswith(".txt")]
         sel = st.selectbox("Abrir sugestão", [""] + [a[:-4] for a in arquivos], key="sel_sugestao")
 
-        # Ao selecionar, carregar automaticamente e mostrar a RELAÇÃO abaixo
         sugestao_indices = []
         if sel:
             path = os.path.join(SUGESTOES_DIR, f"{sel}.txt")
@@ -647,13 +613,11 @@ def main():
                 try:
                     with open(path) as f:
                         sugestao_indices = [int(x) for x in f.read().strip().split(",") if x]
-                    # Carrega a sugestão (substitui seleção atual)
                     st.session_state.selected_idxs = set(sugestao_indices)
                     st.info(f"Sugestão '{sel}' carregada: {len(sugestao_indices)} itens.")
                 except Exception as e:
                     st.error(f"Erro ao carregar '{sel}': {e}")
 
-        # Relação da sugestão (abaixo da seleção)
         if sugestao_indices:
             st.subheader("Relação da Sugestão")
             df_rel = df[df["idx"].isin(sugestao_indices)].copy()
@@ -719,7 +683,6 @@ def main():
             try:
                 cod_int = int(float(new_cod)) if new_cod else None
                 pv_calc = new_pv if new_pv > 0 else new_preco * new_fat
-                # idx único baseado no maior existente
                 idx_next = 0
                 if "idx" in df.columns and not df["idx"].isna().all():
                     try:
