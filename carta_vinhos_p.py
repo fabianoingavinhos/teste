@@ -2,10 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v9.py
+app_streamlit_final_v10.py
 
 Novidades:
 - Removida mensagem de debug '[DEBUG] Índices válidos no view_df' para limpar a interface.
+- Removidas mensagens de debug '[DEBUG] Índices carregados da sugestão' e '[DEBUG] Índices válidos no DF' ao carregar sugestão.
+- Alterado carregamento de sugestão para mesclar índices com seleções existentes (st.session_state.selected_idxs |= set(valid_indices)).
 - Atualizada ordem fixa dos tipos para PDF/Excel: Espumantes, Frisantes, Vinhos Brancos, Vinhos Rosés, Vinhos Tintos, Fortificados, Vinhos Sobremesas, Licorosos.
 - Mantido log de depuração no callback update_selections para verificar seleções.
 - Mantido fallback para capturar seleções diretamente do DataFrame editado, com atualização incremental.
@@ -705,12 +707,10 @@ def main():
                         sugestao_indices = [int(x) for x in f.read().strip().split(",") if x]
                     valid_indices = [idx for idx in sugestao_indices if idx in df["idx"].values]
                     if valid_indices:
-                        st.session_state.selected_idxs = set(valid_indices)
-                        st.info(f"Sugestão '{sel}' carregada: {len(valid_indices)} itens válidos.")
+                        st.session_state.selected_idxs |= set(valid_indices)
+                        st.info(f"Sugestão '{sel}' carregada: {len(valid_indices)} itens válidos mesclados com seleções existentes.")
                     else:
                         st.warning(f"Nenhum item da sugestão '{sel}' corresponde aos índices do DataFrame atual.")
-                    st.write(f"[DEBUG] Índices carregados da sugestão: {sugestao_indices}")
-                    st.write(f"[DEBUG] Índices válidos no DF: {set(df['idx'])}")
                 except Exception as e:
                     st.error(f"Erro ao carregar '{sel}': {e}")
 
