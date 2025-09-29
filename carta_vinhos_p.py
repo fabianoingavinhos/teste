@@ -2,20 +2,20 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v10.py
+app_streamlit_final_v12.py
 
 Novidades:
-- Removida mensagem de debug '[DEBUG] Índices válidos no view_df' para limpar a interface.
-- Removidas mensagens de debug '[DEBUG] Índices carregados da sugestão' e '[DEBUG] Índices válidos no DF' ao carregar sugestão.
-- Alterado carregamento de sugestão para mesclar índices com seleções existentes (st.session_state.selected_idxs |= set(valid_indices)).
-- Atualizada ordem fixa dos tipos para PDF/Excel: Espumantes, Frisantes, Vinhos Brancos, Vinhos Rosés, Vinhos Tintos, Fortificados, Vinhos Sobremesas, Licorosos.
-- Mantido log de depuração no callback update_selections para verificar seleções.
-- Mantido fallback para capturar seleções diretamente do DataFrame editado, com atualização incremental.
-- Mantido botão 'Forçar Atualização' para seleções manuais.
-- Corrigido 'Resetar/Mostrar Todos' usando st.session_state.reset_filters para evitar erros de atribuição direta.
-- Substituído st.experimental_rerun() por st.rerun() em todo o código.
+- Corrigido SyntaxError causado por tags inválidas.
+- Corrigido carregamento de sugestões salvas para atualizar a grade diretamente sem st.rerun().
+- Garantida mesclagem de seleções ao carregar sugestão salva.
+- Corrigida visualização de sugestões e geração de PDF/Excel para refletir seleções corretamente.
+- Atualizada função preparar_view_df para aceitar selected_idxs e refletir seleções na grade.
+- Mantida ordem fixa dos tipos: Espumantes, Frisantes, Vinhos Brancos, Vinhos Rosés, Vinhos Tintos, Fortificados, Vinhos Sobremesas, Licorosos.
+- Mantido fallback para capturar seleções manualmente via st.data_editor.
+- Mantido botão 'Forçar Atualização' para sincronizar seleções manuais.
+- Substituído st.experimental_rerun() por st.rerun() onde necessário.
 - Espaçamento extra entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
-- Otimização de performance com cache (@st.cache_data) e callback (on_change).
+- Otimização com @st.cache_data e callback (on_change).
 """
 
 import os
@@ -145,7 +145,6 @@ def ordenar_para_saida(df):
     return df2.sort_values(cols_exist).drop(columns=["__tipo_ordem"], errors="ignore")
 
 def add_pdf_footer(c, contagem, total_rotulos, fator_geral):
-    from reportlab.lib.pagesizes import A4
     width, height = A4
     y_rodape = 35
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -170,7 +169,6 @@ def add_pdf_footer(c, contagem, total_rotulos, fator_geral):
     c.drawString(width-190, y_rodape-5, "b2b.ingavinhos.com.br")
 
 def gerar_pdf(df, titulo, cliente, inserir_foto, logo_cliente_bytes=None):
-    from reportlab.lib.pagesizes import A4
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
@@ -360,7 +358,11 @@ def main():
         logo_bytes = logo_cliente.read() if logo_cliente else None
 
     # Carrega DF base
-    df = ler_excel_vinhos(caminho_planilha)
+    try:
+        df = ler_excel_vinhos(caminho_planilha)
+    except Exception as e:
+        st.error(f"Erro ao carregar o arquivo {caminho_planilha}: {e}")
+        return
     df = atualiza_coluna_preco_base(df, preco_flag, fator_global=float(fator_global))
 
     # Integra itens cadastrados (sessão)
@@ -394,8 +396,8 @@ def main():
 
     # Resetar filtros se botão "Resetar/Mostrar Todos" for clicado
     if resetar:
-        st.write("[DEBUG] Botão 'Resetar/Mostrar Todos' clicado")
         st.session_state.reset_filters = True
+        st.session_state.selected_idxs = set()
         st.rerun()
 
     # Após rerun, resetar a flag
@@ -426,7 +428,6 @@ def main():
     # Validar seleções contra índices válidos do DataFrame original
     valid_selected_idxs = st.session_state.selected_idxs & set(df["idx"])
     if valid_selected_idxs != st.session_state.selected_idxs:
-        st.write(f"[DEBUG] Ajustando seleções: de {st.session_state.selected_idxs} para {valid_selected_idxs}")
         st.session_state.selected_idxs = valid_selected_idxs
 
     # Contagem por tipo + status seleção
@@ -455,7 +456,7 @@ def main():
 
     # === Grade com seleção ===
     @st.cache_data
-    def preparar_view_df(df_filtrado):
+    def preparar_view_df(df_filtrado, selected_idxs):
         view_df = df_filtrado.copy()
         if not isinstance(view_df, pd.DataFrame):
             view_df = pd.DataFrame(view_df)
@@ -484,24 +485,21 @@ def main():
                 view_df[_c] = to_float_series(_col, default=0.0)
             else:
                 view_df[_c] = 0.0
-        view_df["selecionado"] = view_df["idx"].apply(lambda i: i in st.session_state.selected_idxs)
+        view_df["selecionado"] = view_df["idx"].apply(lambda i: i in selected_idxs)
         view_df["foto"] = view_df["cod"].apply(lambda c: "●" if get_imagem_file(str(c)) else "")
         return view_df[["selecionado", "foto", "cod", "descricao", "pais", "regiao", "preco_base", "preco_de_venda", "fator", "idx"]]
 
     def update_selections():
         try:
             edited = st.session_state.get("editor_main")
-            st.write(f"[DEBUG] Callback chamado. Tipo de dados recebidos: {type(edited)}")
             if isinstance(edited, dict) and "data" in edited:
                 edited = pd.DataFrame(edited["data"])
             if isinstance(edited, pd.DataFrame) and not edited.empty:
-                st.write(f"[DEBUG] Dados editados: {len(edited)} linhas")
                 previous_selected = st.session_state.selected_idxs.copy()
                 current_view_idxs = set(edited["idx"])
                 current_selected = set(edited[edited["selecionado"] == True]["idx"].astype(int))
                 to_remove = previous_selected & current_view_idxs - current_selected
                 new_selected_idxs = (previous_selected - to_remove) | current_selected
-                st.write(f"[DEBUG] Índices selecionados atualizados: {new_selected_idxs}")
                 st.session_state.selected_idxs = new_selected_idxs
                 for _, r in edited.iterrows():
                     try:
@@ -512,12 +510,10 @@ def main():
                         st.session_state.manual_fat[idx] = float(r["fator"])
                     if pd.notnull(r.get("preco_de_venda")):
                         st.session_state.manual_preco_venda[idx] = float(r["preco_de_venda"])
-            else:
-                st.write("[DEBUG] Dados editados inválidos ou vazios.")
         except Exception as e:
-            st.error(f"[DEBUG] Erro no callback: {e}")
+            st.error(f"Erro no callback de atualização: {e}")
 
-    view_df = preparar_view_df(df_filtrado)
+    view_df = preparar_view_df(df_filtrado, st.session_state.selected_idxs)
 
     edited = st.data_editor(
         view_df,
@@ -548,12 +544,9 @@ def main():
         to_remove = previous_selected & current_view_idxs - current_selected
         new_selected_idxs = (previous_selected - to_remove) | current_selected
         if new_selected_idxs != st.session_state.selected_idxs:
-            st.write(f"[DEBUG] Atualizando seleções via fallback: {new_selected_idxs}")
             st.session_state.selected_idxs = new_selected_idxs
 
     st.info(f"Total de itens selecionados: {len(st.session_state.selected_idxs)}")
-    if st.session_state.selected_idxs:
-        st.write(f"[DEBUG] Itens selecionados (índices): {st.session_state.selected_idxs}")
 
     # Aplicar ajustes manuais
     for idx, fat in st.session_state.manual_fat.items():
@@ -591,6 +584,20 @@ def main():
             to_remove = previous_selected & current_view_idxs - current_selected
             st.session_state.selected_idxs = (previous_selected - to_remove) | current_selected
             st.success(f"Seleções atualizadas: {len(st.session_state.selected_idxs)} itens.")
+            # Atualiza view_df para refletir as mudanças
+            view_df = preparar_view_df(df_filtrado, st.session_state.selected_idxs)
+            st.data_editor(view_df, key="editor_main_updated", column_config={
+                "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
+                "foto": st.column_config.TextColumn("FOTO"),
+                "cod": st.column_config.TextColumn("COD"),
+                "descricao": st.column_config.TextColumn("DESCRICAO"),
+                "pais": st.column_config.TextColumn("PAIS"),
+                "regiao": st.column_config.TextColumn("REGIAO"),
+                "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
+                "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
+                "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
+                "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
+            }, use_container_width=True, num_rows="dynamic")
         else:
             st.error("Nenhum dado editado disponível para atualização.")
 
@@ -711,7 +718,20 @@ def main():
                         st.session_state.selected_idxs |= set(valid_indices)
                         if st.session_state.selected_idxs != previous_selected:
                             st.info(f"Sugestão '{sel}' carregada: {len(valid_indices)} itens válidos mesclados com seleções existentes.")
-                            st.rerun()
+                            # Atualiza view_df diretamente
+                            view_df = preparar_view_df(df_filtrado, st.session_state.selected_idxs)
+                            st.data_editor(view_df, key=f"editor_main_sugestao_{sel}", column_config={
+                                "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
+                                "foto": st.column_config.TextColumn("FOTO"),
+                                "cod": st.column_config.TextColumn("COD"),
+                                "descricao": st.column_config.TextColumn("DESCRICAO"),
+                                "pais": st.column_config.TextColumn("PAIS"),
+                                "regiao": st.column_config.TextColumn("REGIAO"),
+                                "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
+                                "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
+                                "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
+                                "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
+                            }, use_container_width=True, num_rows="dynamic")
                         else:
                             st.info(f"Sugestão '{sel}' carregada, mas todos os {len(valid_indices)} itens já estavam selecionados.")
                     else:
@@ -759,9 +779,20 @@ def main():
                     st.info("Selecione uma sugestão na lista.")
         with colz:
             if st.button("Limpar seleção atual", key="btn_limpar_sel"):
-                st.write("[DEBUG] Botão 'Limpar seleção atual' clicado")
                 st.session_state.selected_idxs = set()
-                st.rerun()
+                view_df = preparar_view_df(df_filtrado, st.session_state.selected_idxs)
+                st.data_editor(view_df, key="editor_main_limpar", column_config={
+                    "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
+                    "foto": st.column_config.TextColumn("FOTO"),
+                    "cod": st.column_config.TextColumn("COD"),
+                    "descricao": st.column_config.TextColumn("DESCRICAO"),
+                    "pais": st.column_config.TextColumn("PAIS"),
+                    "regiao": st.column_config.TextColumn("REGIAO"),
+                    "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
+                    "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
+                    "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
+                    "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
+                }, use_container_width=True, num_rows="dynamic")
 
     with tab2:
         st.caption("Cadastrar novo produto (entra apenas na sessão atual; salve no seu Excel depois, se quiser persistir).")
@@ -810,4 +841,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-</xaiArtifact>
+    
