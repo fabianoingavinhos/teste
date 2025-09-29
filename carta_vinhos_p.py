@@ -323,33 +323,29 @@ def main():
 
     st.markdown("### Sugestão de Carta de Vinhos")
 
-    # Botão "Carregar logo clientes" logo abaixo do título
-    if st.button("Carregar logo clientes", key="btn_carregar_logo_clientes"):
-        st.info("Aqui você pode implementar a ação desejada para carregar logos dos clientes.")
-
     with st.container():
-        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.4,1.2,1,1,1.6,0.9,1.2,1.6])
+        c1, c2, c3, c4, c5, c6, c7 = st.columns([1.4,1,1,1.6,0.9,1.2,1.6])
         with c1:
             cliente = st.text_input("Nome do Cliente", value="", placeholder="(opcional)", key="cliente_nome")
         with c2:
-            logo_cliente = st.file_uploader("Carregar logo (cliente)", type=["png","jpg","jpeg"], key="logo_cliente")
-            logo_bytes = logo_cliente.read() if logo_cliente else None
-        with c3:
             inserir_foto = st.checkbox("Inserir foto no PDF/Excel", value=True, key="chk_foto")
-        with c4:
+        with c3:
             preco_flag = st.selectbox("Tabela de preço",
                                       ["preco1", "preco2", "preco15", "preco38", "preco39", "preco55", "preco63"],
                                       index=0, key="preco_flag")
-        with c5:
+        with c4:
             termo_global = st.text_input("Buscar", value="", key="termo_global")
-        with c6:
+        with c5:
             fator_global = st.number_input("Fator", min_value=0.0, value=2.0, step=0.1, key="fator_global_input")
-        with c7:
+        with c6:
             resetar = st.button("Resetar/Mostrar Todos", key="btn_resetar")
-        with c8:
+        with c7:
             caminho_planilha = st.text_input("Arquivo de dados", value="vinhos1.xls",
                                              help="Caminho do arquivo XLS/XLSX (ex.: vinhos1.xls)",
                                              key="caminho_planilha")
+        
+        logo_cliente = st.file_uploader("Carregar logo (cliente)", type=["png","jpg","jpeg"], key="logo_cliente")
+        logo_bytes = logo_cliente.read() if logo_cliente else None
 
     # Carrega DF base
     df = ler_excel_vinhos(caminho_planilha)
