@@ -2,15 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v6.py
+app_streamlit_final_v7.py
 
 Novidades:
-- Corrigido botão 'Limpar seleção atual' usando st.rerun() e limpando st.session_state.selected_idxs.
-- Corrigido botão 'Resetar/Mostrar Todos' limpando filtros em st.session_state e usando st.rerun().
-- Substituído st.experimental_rerun() por st.rerun() em todo o código.
+- Corrigido erro em 'Resetar/Mostrar Todos' usando st.session_state.reset_filters para evitar atribuições diretas a chaves de widgets.
+- Corrigido problema de seleções não persistirem ao pesquisar, garantindo que st.session_state.selected_idxs seja mantido e validado.
 - Mantido log de depuração no callback update_selections para verificar seleções.
 - Mantido fallback para capturar seleções diretamente do DataFrame editado.
 - Mantido botão 'Forçar Atualização' para seleções manuais.
+- Substituído st.experimental_rerun() por st.rerun() em todo o código.
 - Ordem fixa no PDF/Excel: Espumantes, Brancos, Rosés, Tintos, Fortificados, Vinhos de sobremesa.
 - Espaçamento extra entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
 - Otimização de performance com cache (@st.cache_data) e callback (on_change).
@@ -314,6 +314,8 @@ def main():
         st.session_state.manual_preco_venda = {}
     if "cadastrados" not in st.session_state:
         st.session_state.cadastrados = []
+    if "reset_filters" not in st.session_state:
+        st.session_state.reset_filters = False
 
     st.markdown("### Sugestão de Carta de Vinhos")
 
@@ -328,7 +330,7 @@ def main():
                                       ["preco1", "preco2", "preco15", "preco38", "preco39", "preco55", "preco63"],
                                       index=0, key="preco_flag")
         with c4:
-            termo_global = st.text_input("Buscar", value="", key="termo_global")
+            termo_global = st.text_input("Buscar", value="" if st.session_state.reset_filters else st.session_state.get("termo_global", ""), key="termo_global")
         with c5:
             fator_global = st.number_input("Fator", min_value=0.0, value=2.0, step=0.1, key="fator_global_input")
         with c6:
@@ -362,52 +364,54 @@ def main():
     regiao_opc = [""] + sorted([r for r in df["regiao"].dropna().astype(str).unique().tolist() if r])
     cod_opc = [""] + sorted([str(c) for c in df["cod"].dropna().astype(str).unique().tolist()])
 
-    filt_pais = st.sidebar.selectbox("País", pais_opc, index=0, key="filt_pais")
-    filt_tipo = st.sidebar.selectbox("Tipo", tipo_opc, index=0, key="filt_tipo")
-    filt_desc = st.sidebar.selectbox("Descrição", desc_opc, index=0, key="filt_desc")
-    filt_regiao = st.sidebar.selectbox("Região", regiao_opc, index=0, key="filt_regiao")
-    filt_cod = st.sidebar.selectbox("Código", cod_opc, index=0, key="filt_cod")
+    filt_pais = st.sidebar.selectbox("País", pais_opc, index=0 if st.session_state.reset_filters else pais_opc.index(st.session_state.get("filt_pais", "")) if st.session_state.get("filt_pais", "") in pais_opc else 0, key="filt_pais")
+    filt_tipo = st.sidebar.selectbox("Tipo", tipo_opc, index=0 if st.session_state.reset_filters else tipo_opc.index(st.session_state.get("filt_tipo", "")) if st.session_state.get("filt_tipo", "") in tipo_opc else 0, key="filt_tipo")
+    filt_desc = st.sidebar.selectbox("Descrição", desc_opc, index=0 if st.session_state.reset_filters else desc_opc.index(st.session_state.get("filt_desc", "")) if st.session_state.get("filt_desc", "") in desc_opc else 0, key="filt_desc")
+    filt_regiao = st.sidebar.selectbox("Região", regiao_opc, index=0 if st.session_state.reset_filters else regiao_opc.index(st.session_state.get("filt_regiao", "")) if st.session_state.get("filt_regiao", "") in regiao_opc else 0, key="filt_regiao")
+    filt_cod = st.sidebar.selectbox("Código", cod_opc, index=0 if st.session_state.reset_filters else cod_opc.index(st.session_state.get("filt_cod", "")) if st.session_state.get("filt_cod", "") in cod_opc else 0, key="filt_cod")
 
     colp1, colp2 = st.sidebar.columns(2)
     with colp1:
-        preco_min = st.number_input("Preço mín (base)", min_value=0.0, value=0.0, step=1.0, key="preco_min")
+        preco_min = st.number_input("Preço mín (base)", min_value=0.0, value=0.0 if st.session_state.reset_filters else st.session_state.get("preco_min", 0.0), step=1.0, key="preco_min")
     with colp2:
-        preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=0.0, step=1.0, help="0 = sem limite", key="preco_max")
+        preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=0.0 if st.session_state.reset_filters else st.session_state.get("preco_max", 0.0), step=1.0, help="0 = sem limite", key="preco_max")
 
     # Resetar filtros se botão "Resetar/Mostrar Todos" for clicado
     if resetar:
         st.write("[DEBUG] Botão 'Resetar/Mostrar Todos' clicado")
-        st.session_state.filt_pais = ""
-        st.session_state.filt_tipo = ""
-        st.session_state.filt_desc = ""
-        st.session_state.filt_regiao = ""
-        st.session_state.filt_cod = ""
-        st.session_state.preco_min = 0.0
-        st.session_state.preco_max = 0.0
-        st.session_state.termo_global = ""
-        df_filtrado = df.copy()
+        st.session_state.reset_filters = True
         st.rerun()
-    else:
-        # Aplicar filtros (VIEW)
-        df_filtrado = df.copy()
-        if termo_global.strip():
-            term = termo_global.strip().lower()
-            mask = df_filtrado.apply(lambda row: term in " ".join(str(v).lower() for v in row.values), axis=1)
-            df_filtrado = df_filtrado[mask]
-        if filt_pais:
-            df_filtrado = df_filtrado[df_filtrado["pais"] == filt_pais]
-        if filt_tipo:
-            df_filtrado = df_filtrado[df_filtrado["tipo"] == filt_tipo]
-        if filt_desc:
-            df_filtrado = df_filtrado[df_filtrado["descricao"] == filt_desc]
-        if filt_regiao:
-            df_filtrado = df_filtrado[df_filtrado["regiao"] == filt_regiao]
-        if filt_cod:
-            df_filtrado = df_filtrado[df_filtrado["cod"].astype(str) == filt_cod]
-        if preco_min:
-            df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) >= float(preco_min)]
-        if preco_max and preco_max > 0:
-            df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= float(preco_max)]
+
+    # Após rerun, resetar a flag
+    if st.session_state.reset_filters:
+        st.session_state.reset_filters = False
+
+    # Aplicar filtros (VIEW)
+    df_filtrado = df.copy()
+    if termo_global.strip():
+        term = termo_global.strip().lower()
+        mask = df_filtrado.apply(lambda row: term in " ".join(str(v).lower() for v in row.values), axis=1)
+        df_filtrado = df_filtrado[mask]
+    if filt_pais:
+        df_filtrado = df_filtrado[df_filtrado["pais"] == filt_pais]
+    if filt_tipo:
+        df_filtrado = df_filtrado[df_filtrado["tipo"] == filt_tipo]
+    if filt_desc:
+        df_filtrado = df_filtrado[df_filtrado["descricao"] == filt_desc]
+    if filt_regiao:
+        df_filtrado = df_filtrado[df_filtrado["regiao"] == filt_regiao]
+    if filt_cod:
+        df_filtrado = df_filtrado[df_filtrado["cod"].astype(str) == filt_cod]
+    if preco_min:
+        df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) >= float(preco_min)]
+    if preco_max and preco_max > 0:
+        df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= float(preco_max)]
+
+    # Validar seleções contra índices válidos do DataFrame atual
+    valid_selected_idxs = st.session_state.selected_idxs & set(df["idx"])
+    if valid_selected_idxs != st.session_state.selected_idxs:
+        st.write(f"[DEBUG] Ajustando seleções: de {st.session_state.selected_idxs} para {valid_selected_idxs}")
+        st.session_state.selected_idxs = valid_selected_idxs
 
     # Contagem por tipo + status seleção
     contagem = {'Brancos': 0, 'Tintos': 0, 'Rosés': 0, 'Espumantes': 0, 'outros': 0}
@@ -483,6 +487,7 @@ def main():
             st.error(f"[DEBUG] Erro no callback: {e}")
 
     view_df = preparar_view_df(df_filtrado)
+    st.write(f"[DEBUG] Índices válidos no view_df: {set(view_df['idx'])}")
 
     edited = st.data_editor(
         view_df,
