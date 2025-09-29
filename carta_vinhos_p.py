@@ -2,17 +2,18 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v15.py
+app_streamlit_final_v16.py
 
 Novidades:
-- Corrigido problema de inicialização do aplicativo com verificação robusta de vinhos1.xls.
-- Corrigido carregamento de sugestões salvas para atualizar st.session_state.selected_idxs e refletir na grade (st.data_editor).
-- Garantida captura de novas seleções manuais ao salvar alterações em sugestões (mesclar).
+- Corrigido problema de inicialização do aplicativo com verificações robustas para vinhos1.xls.
+- Adicionadas mensagens de erro claras para falhas de carregamento de arquivo ou dependências.
+- Simplificada inicialização de st.session_state para evitar conflitos.
+- Corrigido carregamento de sugestões salvas para atualizar st.session_state.selected_idxs e refletir na grade.
+- Garantida captura de seleções manuais ao salvar alterações em sugestões (mesclar).
 - Mantido fix do botão 'Limpar seleção atual' com chave única para re-renderizar a grade.
 - Melhorado callback update_selections() para seleções manuais confiáveis.
 - Adicionado debug opcional (desativado por padrão) para verificar st.session_state.selected_idxs.
 - Mantida ordem fixa dos tipos: Espumantes, Frisantes, Vinhos Brancos, Vinhos Rosés, Vinhos Tintos, Fortificados, Vinhos Sobremesas, Licorosos.
-- Mantido fallback para seleções manuais via 'Forçar Atualização'.
 - Espaçamento extra entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
 - Otimização com @st.cache_data e callback (on_change).
 """
@@ -26,15 +27,23 @@ import pandas as pd
 from PIL import Image
 
 # --- PDF (ReportLab) ---
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from reportlab.lib.utils import ImageReader
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.utils import ImageReader
+except ImportError:
+    st.error("Módulo 'reportlab' não encontrado. Instale com: pip install reportlab")
+    raise
 
 # --- Excel (openpyxl) ---
-import openpyxl
-from openpyxl.styles import Font, Alignment
-from openpyxl.utils import get_column_letter
-from openpyxl.drawing.image import Image as XLImage
+try:
+    import openpyxl
+    from openpyxl.styles import Font, Alignment
+    from openpyxl.utils import get_column_letter
+    from openpyxl.drawing.image import Image as XLImage
+except ImportError:
+    st.error("Módulo 'openpyxl' não encontrado. Instale com: pip install openpyxl")
+    raise
 
 # --- Constantes e diretórios ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -69,19 +78,21 @@ def to_float_series(s, default=0.0):
 
 def ler_excel_vinhos(caminho="vinhos1.xls"):
     if not os.path.exists(caminho):
-        st.error(f"Arquivo {caminho} não encontrado. Verifique o caminho ou forneça um arquivo válido.")
+        st.error(f"Arquivo {caminho} não encontrado. Verifique o caminho ou forneça um arquivo XLS/XLSX válido.")
         return None
     _, ext = os.path.splitext(caminho.lower())
     engine = None
     if ext == ".xls":
-        engine = "xlrd"
+        try:
+            import xlrd
+            engine = "xlrd"
+        except ImportError:
+            st.error("Para ler arquivos .xls, instale xlrd: pip install xlrd>=2.0.1")
+            return None
     elif ext in (".xlsx", ".xlsm"):
         engine = "openpyxl"
     try:
         df = pd.read_excel(caminho, engine=engine)
-    except ImportError:
-        st.error("Para ler .xls instale xlrd>=2.0.1, ou converta para .xlsx (openpyxl).")
-        return None
     except Exception as e:
         st.error(f"Erro ao carregar {caminho}: {e}")
         return None
@@ -322,7 +333,7 @@ def main():
     st.set_page_config(page_title="Sugestão de Carta de Vinhos", layout="wide")
     garantir_pastas()
 
-    # Estado
+    # Inicializar estado
     if "selected_idxs" not in st.session_state:
         st.session_state.selected_idxs = set()
     if "manual_fat" not in st.session_state:
@@ -338,6 +349,7 @@ def main():
 
     st.markdown("### Sugestão de Carta de Vinhos")
 
+    # Interface de entrada
     with st.container():
         c1, c2, c3, c4, c5, c6, c7 = st.columns([1.4,1,1,1.6,0.9,1.2,1.6])
         with c1:
@@ -365,6 +377,7 @@ def main():
     # Carrega DF base
     df = ler_excel_vinhos(caminho_planilha)
     if df is None:
+        st.warning("Corrija o problema com o arquivo de dados e tente novamente.")
         return
     df = atualiza_coluna_preco_base(df, preco_flag, fator_global=float(fator_global))
 
@@ -397,18 +410,17 @@ def main():
     with colp2:
         preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=0.0 if st.session_state.reset_filters else st.session_state.get("preco_max", 0.0), step=1.0, help="0 = sem limite", key="preco_max")
 
-    # Resetar filtros se botão "Resetar/Mostrar Todos" for clicado
+    # Resetar filtros
     if resetar:
         st.session_state.reset_filters = True
         st.session_state.selected_idxs = set()
         st.session_state.last_suggestion = ""
         st.rerun()
 
-    # Após rerun, resetar a flag
     if st.session_state.reset_filters:
         st.session_state.reset_filters = False
 
-    # Aplicar filtros (VIEW)
+    # Aplicar filtros
     df_filtrado = df.copy()
     if termo_global.strip():
         term = termo_global.strip().lower()
@@ -429,12 +441,12 @@ def main():
     if preco_max and preco_max > 0:
         df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= float(preco_max)]
 
-    # Validar seleções contra índices válidos do DataFrame original
+    # Validar seleções
     valid_selected_idxs = st.session_state.selected_idxs & set(df["idx"])
     if valid_selected_idxs != st.session_state.selected_idxs:
         st.session_state.selected_idxs = valid_selected_idxs
 
-    # Contagem por tipo + status seleção
+    # Contagem por tipo
     contagem = {
         'Espumantes': 0, 'Frisantes': 0, 'Vinhos Brancos': 0, 'Vinhos Rosés': 0,
         'Vinhos Tintos': 0, 'Fortificados': 0, 'Vinhos Sobremesas': 0, 'Licorosos': 0, 'outros': 0
@@ -543,7 +555,7 @@ def main():
         on_change=update_selections,
     )
 
-    # Fallback para capturar seleções manualmente
+    # Fallback para seleções manuais
     if isinstance(edited, pd.DataFrame) and not edited.empty:
         previous_selected = st.session_state.selected_idxs.copy()
         current_view_idxs = set(edited["idx"].astype(int))
@@ -567,7 +579,7 @@ def main():
     for idx, pv in st.session_state.manual_preco_venda.items():
         df.loc[df["idx"] == idx, "preco_de_venda"] = float(pv)
 
-    # Botões de ação + salvar sugestão
+    # Botões de ação
     cA, cB, cC, cD, cE, cF, cG = st.columns([1,1.2,1.2,1.2,1.6,1.2,1])
     with cA:
         ver_preview = st.button("Visualizar Sugestão", key="btn_preview")
@@ -584,7 +596,7 @@ def main():
     with cG:
         forcar_atualizacao = st.button("Forçar Atualização", key="btn_forcar")
 
-    # Forçar atualização das seleções
+    # Forçar atualização
     if forcar_atualizacao:
         if isinstance(edited, pd.DataFrame) and not edited.empty:
             current_selected = set(edited[edited["selecionado"] == True]["idx"].astype(int))
@@ -695,14 +707,14 @@ def main():
                     with open(path) as f:
                         old = [int(x) for x in f.read().strip().split(",") if x]
                     new_set |= set(old)
-                except Exception:
-                    pass
+                except Exception as e:
+                    st.warning(f"Erro ao ler sugestão existente '{nome}': {e}")
             try:
                 with open(path, "w") as f:
                     f.write(",".join(map(str, sorted(list(new_set)))))
                 st.success(f"Sugestão '{nome}' salva (mesclada) em {path}.")
             except Exception as e:
-                st.error(f"Erro ao salvar: {e}")
+                st.error(f"Erro ao salvar sugestão '{nome}': {e}")
 
     # Abas
     st.markdown("---")
@@ -724,10 +736,10 @@ def main():
                     valid_indices = [idx for idx in sugestao_indices if idx in df["idx"].values]
                     if valid_indices:
                         previous_selected = st.session_state.selected_idxs.copy()
-                        st.session_state.selected_idxs = set(valid_indices) | previous_selected  # Mesclar com seleções existentes
+                        st.session_state.selected_idxs = set(valid_indices) | previous_selected
                         # Debug: Verificar seleções após carregar
-                        # st.write(f"Seleções após carregar sugestão '{sel}': {st.session_state.selected_idxs}")
-                        st.info(f"Sugestão '{sel}' carregada: {len(valid_indices)} itens válidos mesclados com seleções existentes.")
+                        # st.write(f"Seleções após carregar '{sel}': {st.session_state.selected_idxs}")
+                        st.info(f"Sugestão '{sel}' carregada: {len(valid_indices)} itens válidos mesclados.")
                         view_df = preparar_view_df(df_filtrado, st.session_state.selected_idxs)
                         st.data_editor(
                             view_df,
@@ -772,7 +784,7 @@ def main():
                         st.session_state.last_suggestion = ""
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Erro ao excluir: {e}")
+                        st.error(f"Erro ao excluir '{sel}': {e}")
                 else:
                     st.info("Selecione uma sugestão na lista.")
         with coly:
@@ -791,7 +803,7 @@ def main():
                         # Debug: Verificar seleções salvas
                         # st.write(f"Seleções salvas em '{sel}': {new_set}")
                     except Exception as e:
-                        st.error(f"Erro ao salvar: {e}")
+                        st.error(f"Erro ao salvar '{sel}': {e}")
                 else:
                     st.info("Selecione uma sugestão na lista.")
         with colz:
