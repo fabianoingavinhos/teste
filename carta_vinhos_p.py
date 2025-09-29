@@ -2,16 +2,16 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v8.py
+app_streamlit_final_v9.py
 
 Novidades:
-- Corrigido problema de seleções não persistirem ao filtrar: agora o callback update_selections atualiza incrementalmente (adiciona marcados, remove desmarcados, mantém seleções fora do view atual).
+- Removida mensagem de debug '[DEBUG] Índices válidos no view_df' para limpar a interface.
+- Atualizada ordem fixa dos tipos para PDF/Excel: Espumantes, Frisantes, Vinhos Brancos, Vinhos Rosés, Vinhos Tintos, Fortificados, Vinhos Sobremesas, Licorosos.
 - Mantido log de depuração no callback update_selections para verificar seleções.
 - Mantido fallback para capturar seleções diretamente do DataFrame editado, com atualização incremental.
 - Mantido botão 'Forçar Atualização' para seleções manuais.
 - Corrigido 'Resetar/Mostrar Todos' usando st.session_state.reset_filters para evitar erros de atribuição direta.
 - Substituído st.experimental_rerun() por st.rerun() em todo o código.
-- Ordem fixa no PDF/Excel: Espumantes, Brancos, Rosés, Tintos, Fortificados, Vinhos de sobremesa.
 - Espaçamento extra entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
 - Otimização de performance com cache (@st.cache_data) e callback (on_change).
 """
@@ -43,8 +43,8 @@ CARTA_DIR = os.path.join(BASE_DIR, "CARTA")
 LOGO_PADRAO = os.path.join(CARTA_DIR, "logo_inga.png")
 
 TIPO_ORDEM_FIXA = [
-    "Espumantes", "Brancos", "Rosés", "Tintos",
-    "Fortificados", "Vinhos de sobremesa"
+    "Espumantes", "Frisantes", "Vinhos Brancos", "Vinhos Rosés",
+    "Vinhos Tintos", "Fortificados", "Vinhos Sobremesas", "Licorosos"
 ]
 
 # ===== Helpers =====
@@ -121,16 +121,19 @@ def atualiza_coluna_preco_base(df: pd.DataFrame, flag: str, fator_global: float)
     df["preco_de_venda"] = (df["preco_base"].astype(float) * df["fator"].astype(float)).astype(float)
     return df
 
+def normaliza_tipo(t):
+    t = str(t).strip().lower()
+    if "espum" in t: return "Espumantes"
+    if "fris" in t: return "Frisantes"
+    if "branc" in t: return "Vinhos Brancos"
+    if "ros" in t: return "Vinhos Rosés"
+    if "tint" in t: return "Vinhos Tintos"
+    if "forti" in t: return "Fortificados"
+    if "sobrem" in t: return "Vinhos Sobremesas"
+    if "licor" in t: return "Licorosos"
+    return t.title()
+
 def ordenar_para_saida(df):
-    def normaliza_tipo(t):
-        t = str(t).strip().lower()
-        if "espum" in t: return "Espumantes"
-        if "branc" in t: return "Brancos"
-        if "ros" in t: return "Rosés"
-        if "tint" in t: return "Tintos"
-        if "forti" in t: return "Fortificados"
-        if "sobrem" in t: return "Vinhos de sobremesa"
-        return t.title()
     tipos_norm = df.get("tipo", pd.Series([""]*len(df))).astype(str).map(normaliza_tipo)
     ordem_map = {t: i for i, t in enumerate(TIPO_ORDEM_FIXA)}
     ordem = tipos_norm.map(lambda x: ordem_map.get(x, 999))
@@ -154,8 +157,10 @@ def add_pdf_footer(c, contagem, total_rotulos, fator_geral):
         fator_str = str(fator_geral)
     c.setFont("Helvetica-Bold", 6)
     c.drawString(32, y_rodape+7,
-        f"Brancos: {contagem.get('Brancos',0)} | Tintos: {contagem.get('Tintos',0)} | "
-        f"Rosés: {contagem.get('Rosés',0)} | Espumantes: {contagem.get('Espumantes',0)} | "
+        f"Espumantes: {contagem.get('Espumantes',0)} | Frisantes: {contagem.get('Frisantes',0)} | "
+        f"Brancos: {contagem.get('Vinhos Brancos',0)} | Rosés: {contagem.get('Vinhos Rosés',0)} | "
+        f"Tintos: {contagem.get('Vinhos Tintos',0)} | Fortificados: {contagem.get('Fortificados',0)} | "
+        f"Sobremesas: {contagem.get('Vinhos Sobremesas',0)} | Licorosos: {contagem.get('Licorosos',0)} | "
         f"Total: {int(total_rotulos)} | Fator: {fator_str}")
     c.setFont("Helvetica", 5)
     c.drawString(32, y_rodape-5, "Ingá Distribuidora Ltda | CNPJ 05.390.477/0002-25 Rod BR 232, KM 18,5 - S/N- Manassu - CEP 54130-340 Jaboatão")
@@ -190,22 +195,30 @@ def gerar_pdf(df, titulo, cliente, inserir_foto, logo_cliente_bytes=None):
         y -= 20
 
     ordem_geral = 1
-    contagem = {'Brancos':0, 'Tintos':0, 'Rosés':0, 'Espumantes':0, 'outros':0}
+    contagem = {
+        'Espumantes': 0, 'Frisantes': 0, 'Vinhos Brancos': 0, 'Vinhos Rosés': 0,
+        'Vinhos Tintos': 0, 'Fortificados': 0, 'Vinhos Sobremesas': 0, 'Licorosos': 0, 'outros': 0
+    }
     df_sorted = ordenar_para_saida(df)
 
     for tipo in df_sorted['tipo'].fillna("").astype(str).unique():
+        tipo_norm = normaliza_tipo(tipo)
         c.setFont("Helvetica-Bold", 10)
-        c.drawString(x_texto, y, str(tipo).upper()); y -= 14
+        c.drawString(x_texto, y, tipo_norm.upper()); y -= 14
         for pais in df_sorted[df_sorted['tipo']==tipo]['pais'].dropna().unique():
             c.setFont("Helvetica-Bold", 8)
             c.drawString(x_texto, y, str(pais).upper()); y -= 12
             grupo = df_sorted[(df_sorted['tipo']==tipo) & (df_sorted['pais']==pais)]
             for _, row in grupo.iterrows():
                 t = str(tipo).lower()
-                if "branc" in t: contagem["Brancos"] += 1
-                elif "tint" in t: contagem["Tintos"] += 1
-                elif "ros" in t: contagem["Rosés"] += 1
-                elif "espum" in t: contagem["Espumantes"] += 1
+                if "espum" in t: contagem["Espumantes"] += 1
+                elif "fris" in t: contagem["Frisantes"] += 1
+                elif "branc" in t: contagem["Vinhos Brancos"] += 1
+                elif "ros" in t: contagem["Vinhos Rosés"] += 1
+                elif "tint" in t: contagem["Vinhos Tintos"] += 1
+                elif "forti" in t: contagem["Fortificados"] += 1
+                elif "sobrem" in t: contagem["Vinhos Sobremesas"] += 1
+                elif "licor" in t: contagem["Licorosos"] += 1
                 else: contagem["outros"] += 1
 
                 c.setFont("Helvetica", 6)
@@ -267,8 +280,9 @@ def exportar_excel_like_pdf(df, inserir_foto=True):
     row_num = 1; ordem_geral = 1
     df_sorted = ordenar_para_saida(df)
     for tipo in df_sorted['tipo'].fillna("").unique():
+        tipo_norm = normaliza_tipo(tipo)
         ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=8)
-        cell = ws.cell(row=row_num, column=1, value=str(tipo).upper()); cell.font = Font(bold=True, size=18); row_num += 1
+        cell = ws.cell(row=row_num, column=1, value=tipo_norm.upper()); cell.font = Font(bold=True, size=18); row_num += 1
         for pais in df_sorted[df_sorted['tipo'] == tipo]['pais'].dropna().unique():
             ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=8)
             cell = ws.cell(row=row_num, column=1, value=str(pais).upper()); cell.font = Font(bold=True, size=14); row_num += 1
@@ -414,17 +428,28 @@ def main():
         st.session_state.selected_idxs = valid_selected_idxs
 
     # Contagem por tipo + status seleção
-    contagem = {'Brancos': 0, 'Tintos': 0, 'Rosés': 0, 'Espumantes': 0, 'outros': 0}
+    contagem = {
+        'Espumantes': 0, 'Frisantes': 0, 'Vinhos Brancos': 0, 'Vinhos Rosés': 0,
+        'Vinhos Tintos': 0, 'Fortificados': 0, 'Vinhos Sobremesas': 0, 'Licorosos': 0, 'outros': 0
+    }
     for t, n in df_filtrado.groupby('tipo').size().items():
         t_low = str(t).lower()
-        if "branc" in t_low: contagem['Brancos'] += int(n)
-        elif "tint" in t_low: contagem['Tintos'] += int(n)
-        elif "ros" in t_low: contagem['Rosés'] += int(n)
-        elif "espum" in t_low: contagem['Espumantes'] += int(n)
+        if "espum" in t_low: contagem['Espumantes'] += int(n)
+        elif "fris" in t_low: contagem['Frisantes'] += int(n)
+        elif "branc" in t_low: contagem['Vinhos Brancos'] += int(n)
+        elif "ros" in t_low: contagem['Vinhos Rosés'] += int(n)
+        elif "tint" in t_low: contagem['Vinhos Tintos'] += int(n)
+        elif "forti" in t_low: contagem['Fortificados'] += int(n)
+        elif "sobrem" in t_low: contagem['Vinhos Sobremesas'] += int(n)
+        elif "licor" in t_low: contagem['Licorosos'] += int(n)
         else: contagem['outros'] += int(n)
     total = len(df_filtrado)
     selecionados = len(st.session_state.selected_idxs)
-    st.caption(f"Brancos: {contagem.get('Brancos', 0)} | Tintos: {contagem.get('Tintos', 0)} | Rosés: {contagem.get('Rosés', 0)} | Espumantes: {contagem.get('Espumantes', 0)} | Total: {total} | Selecionados: {selecionados} | Fator: {float(fator_global):.2f}")
+    st.caption(f"Espumantes: {contagem.get('Espumantes', 0)} | Frisantes: {contagem.get('Frisantes', 0)} | "
+               f"Brancos: {contagem.get('Vinhos Brancos', 0)} | Rosés: {contagem.get('Vinhos Rosés', 0)} | "
+               f"Tintos: {contagem.get('Vinhos Tintos', 0)} | Fortificados: {contagem.get('Fortificados', 0)} | "
+               f"Sobremesas: {contagem.get('Vinhos Sobremesas', 0)} | Licorosos: {contagem.get('Licorosos', 0)} | "
+               f"Total: {total} | Selecionados: {selecionados} | Fator: {float(fator_global):.2f}")
 
     # === Grade com seleção ===
     @st.cache_data
@@ -491,7 +516,6 @@ def main():
             st.error(f"[DEBUG] Erro no callback: {e}")
 
     view_df = preparar_view_df(df_filtrado)
-    st.write(f"[DEBUG] Índices válidos no view_df: {set(view_df['idx'])}")
 
     edited = st.data_editor(
         view_df,
@@ -582,7 +606,8 @@ def main():
             preview_lines.append("="*70)
             ordem_geral = 1
             for tipo in df_sel['tipo'].dropna().unique():
-                preview_lines.append(f"\n{str(tipo).upper()}")
+                tipo_norm = normaliza_tipo(tipo)
+                preview_lines.append(f"\n{tipo_norm.upper()}")
                 for pais in df_sel[df_sel['tipo']==tipo]['pais'].dropna().unique():
                     preview_lines.append(f"  {str(pais).upper()}")
                     grupo = df_sel[(df_sel['tipo']==tipo) & (df_sel['pais']==pais)]
