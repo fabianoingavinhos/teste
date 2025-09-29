@@ -2,14 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v5.py
+app_streamlit_final_v6.py
 
 Novidades:
-- Adicionado log de depuração no callback update_selections para verificar seleções.
-- Fallback para capturar seleções diretamente do DataFrame editado, caso o callback falhe.
-- Botão 'Forçar Atualização' para atualizar seleções manualmente.
-- Mensagem informativa com número de itens selecionados e índices.
-- Verificação de índices ao carregar sugestões salvas.
+- Corrigido botão 'Limpar seleção atual' usando st.rerun() e limpando st.session_state.selected_idxs.
+- Corrigido botão 'Resetar/Mostrar Todos' limpando filtros em st.session_state e usando st.rerun().
+- Substituído st.experimental_rerun() por st.rerun() em todo o código.
+- Mantido log de depuração no callback update_selections para verificar seleções.
+- Mantido fallback para capturar seleções diretamente do DataFrame editado.
+- Mantido botão 'Forçar Atualização' para seleções manuais.
 - Ordem fixa no PDF/Excel: Espumantes, Brancos, Rosés, Tintos, Fortificados, Vinhos de sobremesa.
 - Espaçamento extra entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
 - Otimização de performance com cache (@st.cache_data) e callback (on_change).
@@ -373,29 +374,40 @@ def main():
     with colp2:
         preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=0.0, step=1.0, help="0 = sem limite", key="preco_max")
 
-    # Aplicar filtros (VIEW)
-    df_filtrado = df.copy()
-    if termo_global.strip():
-        term = termo_global.strip().lower()
-        mask = df_filtrado.apply(lambda row: term in " ".join(str(v).lower() for v in row.values), axis=1)
-        df_filtrado = df_filtrado[mask]
-    if filt_pais:
-        df_filtrado = df_filtrado[df_filtrado["pais"] == filt_pais]
-    if filt_tipo:
-        df_filtrado = df_filtrado[df_filtrado["tipo"] == filt_tipo]
-    if filt_desc:
-        df_filtrado = df_filtrado[df_filtrado["descricao"] == filt_desc]
-    if filt_regiao:
-        df_filtrado = df_filtrado[df_filtrado["regiao"] == filt_regiao]
-    if filt_cod:
-        df_filtrado = df_filtrado[df_filtrado["cod"].astype(str) == filt_cod]
-    if preco_min:
-        df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) >= float(preco_min)]
-    if preco_max and preco_max > 0:
-        df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= float(preco_max)]
-
+    # Resetar filtros se botão "Resetar/Mostrar Todos" for clicado
     if resetar:
+        st.write("[DEBUG] Botão 'Resetar/Mostrar Todos' clicado")
+        st.session_state.filt_pais = ""
+        st.session_state.filt_tipo = ""
+        st.session_state.filt_desc = ""
+        st.session_state.filt_regiao = ""
+        st.session_state.filt_cod = ""
+        st.session_state.preco_min = 0.0
+        st.session_state.preco_max = 0.0
+        st.session_state.termo_global = ""
         df_filtrado = df.copy()
+        st.rerun()
+    else:
+        # Aplicar filtros (VIEW)
+        df_filtrado = df.copy()
+        if termo_global.strip():
+            term = termo_global.strip().lower()
+            mask = df_filtrado.apply(lambda row: term in " ".join(str(v).lower() for v in row.values), axis=1)
+            df_filtrado = df_filtrado[mask]
+        if filt_pais:
+            df_filtrado = df_filtrado[df_filtrado["pais"] == filt_pais]
+        if filt_tipo:
+            df_filtrado = df_filtrado[df_filtrado["tipo"] == filt_tipo]
+        if filt_desc:
+            df_filtrado = df_filtrado[df_filtrado["descricao"] == filt_desc]
+        if filt_regiao:
+            df_filtrado = df_filtrado[df_filtrado["regiao"] == filt_regiao]
+        if filt_cod:
+            df_filtrado = df_filtrado[df_filtrado["cod"].astype(str) == filt_cod]
+        if preco_min:
+            df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) >= float(preco_min)]
+        if preco_max and preco_max > 0:
+            df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= float(preco_max)]
 
     # Contagem por tipo + status seleção
     contagem = {'Brancos': 0, 'Tintos': 0, 'Rosés': 0, 'Espumantes': 0, 'outros': 0}
@@ -677,7 +689,7 @@ def main():
                     try:
                         os.remove(os.path.join(SUGESTOES_DIR, f"{sel}.txt"))
                         st.success(f"Sugestão '{sel}' excluída.")
-                        st.experimental_rerun()
+                        st.rerun()
                     except Exception as e:
                         st.error(f"Erro ao excluir: {e}")
                 else:
@@ -701,8 +713,9 @@ def main():
                     st.info("Selecione uma sugestão na lista.")
         with colz:
             if st.button("Limpar seleção atual", key="btn_limpar_sel"):
+                st.write("[DEBUG] Botão 'Limpar seleção atual' clicado")
                 st.session_state.selected_idxs = set()
-                st.experimental_rerun()
+                st.rerun()
 
     with tab2:
         st.caption("Cadastrar novo produto (entra apenas na sessão atual; salve no seu Excel depois, se quiser persistir).")
@@ -745,7 +758,7 @@ def main():
                 }
                 st.session_state.cadastrados.append(novo)
                 st.success("Produto cadastrado na sessão atual. Ele já aparece na grade após o recarregamento.")
-                st.experimental_rerun()
+                st.rerun()
             except Exception as e:
                 st.error(f"Erro ao cadastrar: {e}")
 
