@@ -2,17 +2,17 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v14.py
+app_streamlit_final_v15.py
 
 Novidades:
+- Corrigido problema de inicialização do aplicativo com verificação robusta de vinhos1.xls.
 - Corrigido carregamento de sugestões salvas para atualizar st.session_state.selected_idxs e refletir na grade (st.data_editor).
-- Garantida captura de novas seleções manuais ao salvar alterações em sugestões existentes (mesclar).
-- Mantido fix do botão 'Limpar seleção atual' para limpar seleções e atualizar grade com chave única.
-- Melhorada captura de seleções manuais via callback update_selections().
-- Adicionado debug opcional para verificar st.session_state.selected_idxs.
+- Garantida captura de novas seleções manuais ao salvar alterações em sugestões (mesclar).
+- Mantido fix do botão 'Limpar seleção atual' com chave única para re-renderizar a grade.
+- Melhorado callback update_selections() para seleções manuais confiáveis.
+- Adicionado debug opcional (desativado por padrão) para verificar st.session_state.selected_idxs.
 - Mantida ordem fixa dos tipos: Espumantes, Frisantes, Vinhos Brancos, Vinhos Rosés, Vinhos Tintos, Fortificados, Vinhos Sobremesas, Licorosos.
 - Mantido fallback para seleções manuais via 'Forçar Atualização'.
-- Substituído st.experimental_rerun() por st.rerun() onde necessário.
 - Espaçamento extra entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
 - Otimização com @st.cache_data e callback (on_change).
 """
@@ -68,6 +68,9 @@ def to_float_series(s, default=0.0):
         return pd.to_numeric(s, errors="coerce").fillna(default)
 
 def ler_excel_vinhos(caminho="vinhos1.xls"):
+    if not os.path.exists(caminho):
+        st.error(f"Arquivo {caminho} não encontrado. Verifique o caminho ou forneça um arquivo válido.")
+        return None
     _, ext = os.path.splitext(caminho.lower())
     engine = None
     if ext == ".xls":
@@ -78,9 +81,10 @@ def ler_excel_vinhos(caminho="vinhos1.xls"):
         df = pd.read_excel(caminho, engine=engine)
     except ImportError:
         st.error("Para ler .xls instale xlrd>=2.0.1, ou converta para .xlsx (openpyxl).")
-        raise
-    except Exception:
-        df = pd.read_excel(caminho)
+        return None
+    except Exception as e:
+        st.error(f"Erro ao carregar {caminho}: {e}")
+        return None
     df.columns = [c.strip().lower() for c in df.columns]
     if "idx" not in df.columns or df["idx"].isna().all():
         df = df.reset_index(drop=False).rename(columns={"index": "idx"})
@@ -359,10 +363,8 @@ def main():
         logo_bytes = logo_cliente.read() if logo_cliente else None
 
     # Carrega DF base
-    try:
-        df = ler_excel_vinhos(caminho_planilha)
-    except Exception as e:
-        st.error(f"Erro ao carregar o arquivo {caminho_planilha}: {e}")
+    df = ler_excel_vinhos(caminho_planilha)
+    if df is None:
         return
     df = atualiza_coluna_preco_base(df, preco_flag, fator_global=float(fator_global))
 
@@ -399,6 +401,7 @@ def main():
     if resetar:
         st.session_state.reset_filters = True
         st.session_state.selected_idxs = set()
+        st.session_state.last_suggestion = ""
         st.rerun()
 
     # Após rerun, resetar a flag
@@ -503,7 +506,7 @@ def main():
                 new_selected_idxs = (previous_selected - to_remove) | current_selected
                 if new_selected_idxs != st.session_state.selected_idxs:
                     st.session_state.selected_idxs = new_selected_idxs
-                    # Debug: Verificar seleções após atualização
+                    # Debug: Verificar seleções após callback
                     # st.write(f"Seleções após callback: {st.session_state.selected_idxs}")
                 for _, r in edited.iterrows():
                     try:
@@ -590,9 +593,8 @@ def main():
             to_remove = previous_selected & current_view_idxs - current_selected
             st.session_state.selected_idxs = (previous_selected - to_remove) | current_selected
             st.success(f"Seleções atualizadas: {len(st.session_state.selected_idxs)} itens.")
-            # Atualiza view_df para refletir as mudanças
             view_df = preparar_view_df(df_filtrado, st.session_state.selected_idxs)
-            st.data_editor(view_df, key="editor_main_updated", column_config={
+            st.data_editor(view_df, key=f"editor_main_updated_{datetime.now().timestamp()}", column_config={
                 "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
                 "foto": st.column_config.TextColumn("FOTO"),
                 "cod": st.column_config.TextColumn("COD"),
@@ -603,7 +605,7 @@ def main():
                 "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
                 "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
                 "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
-            }, use_container_width=True, num_rows="dynamic")
+            }, use_container_width=True, num_rows="dynamic", on_change=update_selections)
         else:
             st.error("Nenhum dado editado disponível para atualização.")
 
@@ -722,34 +724,30 @@ def main():
                     valid_indices = [idx for idx in sugestao_indices if idx in df["idx"].values]
                     if valid_indices:
                         previous_selected = st.session_state.selected_idxs.copy()
-                        st.session_state.selected_idxs |= set(valid_indices)
-                        if st.session_state.selected_idxs != previous_selected:
-                            st.info(f"Sugestão '{sel}' carregada: {len(valid_indices)} itens válidos mesclados com seleções existentes.")
-                            # Debug: Verificar seleções após carregar
-                            # st.write(f"Seleções após carregar sugestão: {st.session_state.selected_idxs}")
-                            # Atualiza view_df diretamente
-                            view_df = preparar_view_df(df_filtrado, st.session_state.selected_idxs)
-                            st.data_editor(
-                                view_df,
-                                key=f"editor_sugestao_{sel}_{datetime.now().timestamp()}",
-                                column_config={
-                                    "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
-                                    "foto": st.column_config.TextColumn("FOTO"),
-                                    "cod": st.column_config.TextColumn("COD"),
-                                    "descricao": st.column_config.TextColumn("DESCRICAO"),
-                                    "pais": st.column_config.TextColumn("PAIS"),
-                                    "regiao": st.column_config.TextColumn("REGIAO"),
-                                    "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
-                                    "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
-                                    "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
-                                    "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
-                                },
-                                use_container_width=True,
-                                num_rows="dynamic",
-                                on_change=update_selections,
-                            )
-                        else:
-                            st.info(f"Sugestão '{sel}' carregada, mas todos os {len(valid_indices)} itens já estavam selecionados.")
+                        st.session_state.selected_idxs = set(valid_indices) | previous_selected  # Mesclar com seleções existentes
+                        # Debug: Verificar seleções após carregar
+                        # st.write(f"Seleções após carregar sugestão '{sel}': {st.session_state.selected_idxs}")
+                        st.info(f"Sugestão '{sel}' carregada: {len(valid_indices)} itens válidos mesclados com seleções existentes.")
+                        view_df = preparar_view_df(df_filtrado, st.session_state.selected_idxs)
+                        st.data_editor(
+                            view_df,
+                            key=f"editor_sugestao_{sel}_{datetime.now().timestamp()}",
+                            column_config={
+                                "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
+                                "foto": st.column_config.TextColumn("FOTO"),
+                                "cod": st.column_config.TextColumn("COD"),
+                                "descricao": st.column_config.TextColumn("DESCRICAO"),
+                                "pais": st.column_config.TextColumn("PAIS"),
+                                "regiao": st.column_config.TextColumn("REGIAO"),
+                                "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
+                                "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
+                                "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
+                                "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
+                            },
+                            use_container_width=True,
+                            num_rows="dynamic",
+                            on_change=update_selections,
+                        )
                     else:
                         st.warning(f"Nenhum item da sugestão '{sel}' corresponde aos índices do DataFrame atual.")
                 except Exception as e:
@@ -786,12 +784,12 @@ def main():
                         if os.path.exists(path):
                             with open(path) as f:
                                 old = [int(x) for x in f.read().strip().split(",") if x]
-                        new_set = set(old) | set(st.session_state.selected_idxs)
+                        new_set = set(old) | st.session_state.selected_idxs
                         with open(path, "w") as f:
                             f.write(",".join(map(str, sorted(list(new_set)))))
                         st.success(f"Sugestão '{sel}' atualizada (itens mesclados).")
                         # Debug: Verificar seleções salvas
-                        # st.write(f"Seleções salvas: {new_set}")
+                        # st.write(f"Seleções salvas em '{sel}': {new_set}")
                     except Exception as e:
                         st.error(f"Erro ao salvar: {e}")
                 else:
