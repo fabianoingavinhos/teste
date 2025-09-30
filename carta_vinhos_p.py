@@ -16,6 +16,8 @@ Novidades:
 - Adicionado debug opcional para monitorar desempenho e seleções.
 - Mantida ordem fixa dos tipos: Espumantes, Frisantes, Vinhos Brancos, Vinhos Rosés, Vinhos Tintos, Fortificados, Vinhos Sobremesas, Licorosos.
 - Espaçamento extra entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
+- Adicionada coluna 'preco_base' antes de 'preco_de_venda' na grade do st.data_editor.
+- Ocultada coluna 'idx' da grade do st.data_editor.
 """
 
 import os
@@ -507,7 +509,7 @@ def main():
         view_df["selecionado"] = view_df["idx"].isin(selected_idxs)
         # Debug: Tempo de preparação da grade
         # st.write(f"Tempo de preparação da grade: {time.time() - start_time:.2f} segundos")
-        return view_df[["selecionado", "cod", "descricao", "pais", "preco_de_venda", "idx"]]
+        return view_df[["selecionado", "cod", "descricao", "pais", "preco_base", "preco_de_venda"]]
 
     def update_selections():
         start_time = time.time()
@@ -543,8 +545,8 @@ def main():
             "cod": st.column_config.TextColumn("COD"),
             "descricao": st.column_config.TextColumn("DESCRICAO"),
             "pais": st.column_config.TextColumn("PAIS"),
+            "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
             "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
-            "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
         },
         use_container_width=True,
         num_rows="dynamic",
@@ -606,14 +608,21 @@ def main():
             st.session_state.selected_idxs = (previous_selected - to_remove) | current_selected
             st.success(f"Seleções atualizadas: {len(st.session_state.selected_idxs)} itens.")
             view_df = preparar_view_df(df_filtrado, st.session_state.selected_idxs)
-            st.data_editor(view_df, key=f"editor_main_updated_{datetime.now().timestamp()}", column_config={
-                "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
-                "cod": st.column_config.TextColumn("COD"),
-                "descricao": st.column_config.TextColumn("DESCRICAO"),
-                "pais": st.column_config.TextColumn("PAIS"),
-                "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
-                "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
-            }, use_container_width=True, num_rows="dynamic", on_change=update_selections)
+            st.data_editor(
+                view_df,
+                key=f"editor_main_updated_{datetime.now().timestamp()}",
+                column_config={
+                    "selecionado": st.column_config.CheckboxColumn("SELECIONADO", help="Marque para incluir na sugestão"),
+                    "cod": st.column_config.TextColumn("COD"),
+                    "descricao": st.column_config.TextColumn("DESCRICAO"),
+                    "pais": st.column_config.TextColumn("PAIS"),
+                    "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
+                    "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
+                },
+                use_container_width=True,
+                num_rows="dynamic",
+                on_change=update_selections,
+            )
         else:
             st.error("Nenhum dado editado disponível para atualização.")
 
@@ -745,8 +754,8 @@ def main():
                                 "cod": st.column_config.TextColumn("COD"),
                                 "descricao": st.column_config.TextColumn("DESCRICAO"),
                                 "pais": st.column_config.TextColumn("PAIS"),
+                                "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
                                 "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
-                                "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
                             },
                             use_container_width=True,
                             num_rows="dynamic",
@@ -810,8 +819,8 @@ def main():
                         "cod": st.column_config.TextColumn("COD"),
                         "descricao": st.column_config.TextColumn("DESCRICAO"),
                         "pais": st.column_config.TextColumn("PAIS"),
+                        "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
                         "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
-                        "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
                     },
                     use_container_width=True,
                     num_rows="dynamic",
