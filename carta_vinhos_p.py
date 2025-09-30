@@ -17,7 +17,8 @@ Novidades:
 - Mantida ordem fixa dos tipos: Espumantes, Frisantes, Vinhos Brancos, Vinhos Rosés, Vinhos Tintos, Fortificados, Vinhos Sobremesas, Licorosos.
 - Espaçamento extra entre seções de tipo no PDF (y -= 10) e Excel (row_num += 1).
 - Adicionada coluna 'preco_base' antes de 'preco_de_venda' na grade do st.data_editor.
-- Ocultada coluna 'idx' da grade do st.data_editor.
+- Ocultada coluna 'idx' da grade do st.data_editor, mantendo-a internamente para lógica de seleção.
+- Corrigido KeyError em update_selections mantendo idx no DataFrame interno.
 """
 
 import os
@@ -509,7 +510,7 @@ def main():
         view_df["selecionado"] = view_df["idx"].isin(selected_idxs)
         # Debug: Tempo de preparação da grade
         # st.write(f"Tempo de preparação da grade: {time.time() - start_time:.2f} segundos")
-        return view_df[["selecionado", "cod", "descricao", "pais", "preco_base", "preco_de_venda"]]
+        return view_df[["selecionado", "cod", "descricao", "pais", "preco_base", "preco_de_venda", "idx"]]
 
     def update_selections():
         start_time = time.time()
@@ -547,6 +548,7 @@ def main():
             "pais": st.column_config.TextColumn("PAIS"),
             "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
             "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
+            "idx": None,  # Oculta a coluna idx na interface
         },
         use_container_width=True,
         num_rows="dynamic",
@@ -618,6 +620,7 @@ def main():
                     "pais": st.column_config.TextColumn("PAIS"),
                     "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
                     "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
+                    "idx": None,  # Oculta a coluna idx na interface
                 },
                 use_container_width=True,
                 num_rows="dynamic",
@@ -756,6 +759,7 @@ def main():
                                 "pais": st.column_config.TextColumn("PAIS"),
                                 "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
                                 "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
+                                "idx": None,  # Oculta a coluna idx na interface
                             },
                             use_container_width=True,
                             num_rows="dynamic",
@@ -821,6 +825,7 @@ def main():
                         "pais": st.column_config.TextColumn("PAIS"),
                         "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
                         "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
+                        "idx": None,  # Oculta a coluna idx na interface
                     },
                     use_container_width=True,
                     num_rows="dynamic",
